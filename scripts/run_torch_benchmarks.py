@@ -16,10 +16,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dietconv.torch_ops import (
-    dietconv2d_v2,
-    unfold_conv2d,
+    dietconv2d_v1_compiled,
+    dietconv2d_v2_compiled,
+    load_dietconv_extension,
     workspace_bytes_dietconv2d_v2,
+    workspace_bytes_dietconv2d_v1,
     workspace_bytes_unfold,
+    unfold_conv2d,
 )
 
 
@@ -49,6 +52,7 @@ THREAD_PROBLEMS = [
         "pad": 1,
     },
 ]
+NUMERIC_TOLERANCE = 1e-4
 
 
 def make_inputs(problem: dict, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -95,7 +99,7 @@ def autotune_tile_width(x: torch.Tensor, weight: torch.Tensor, problem: dict) ->
     trials = []
     for width in candidate_tile_widths(out_w, problem["stride"]):
         _, mean, _ = time_call(
-            lambda: dietconv2d_v2(
+            lambda: dietconv2d_v2_compiled(
                 x,
                 weight,
                 stride=problem["stride"],
@@ -130,9 +134,17 @@ def run_problem(problem: dict, backend: str, threads: int, seed: int, repeat: in
     elif backend == "torch-unfold":
         fn = lambda: unfold_conv2d(x, weight, stride=problem["stride"], padding=problem["pad"])
         workspace_bytes = workspace_bytes_unfold(x, weight, stride=problem["stride"], padding=problem["pad"])
-    elif backend == "dietconv-v2":
+    elif backend == "dietconv-v1-compiled":
+        fn = lambda: dietconv2d_v1_compiled(
+            x,
+            weight,
+            stride=problem["stride"],
+            padding=problem["pad"],
+        )
+        workspace_bytes = workspace_bytes_dietconv2d_v1(x, weight, padding=problem["pad"])
+    elif backend == "dietconv-v2-compiled":
         tile_out_width = autotune_tile_width(x, weight, problem)
-        fn = lambda: dietconv2d_v2(
+        fn = lambda: dietconv2d_v2_compiled(
             x,
             weight,
             stride=problem["stride"],
@@ -151,6 +163,10 @@ def run_problem(problem: dict, backend: str, threads: int, seed: int, repeat: in
 
     output, mean_ms, std_ms = time_call(fn, repeat=repeat, warmup=warmup)
     max_abs_diff = float((output - reference).abs().max().item())
+    if max_abs_diff > NUMERIC_TOLERANCE:
+        raise AssertionError(
+            f"{backend} exceeded numeric tolerance: {max_abs_diff} > {NUMERIC_TOLERANCE}"
+        )
     return {
         "backend": backend,
         "threads": threads,
@@ -187,6 +203,8 @@ def main() -> None:
     parser.add_argument("--results-dir", type=Path, default=ROOT / "results")
     args = parser.parse_args()
 
+    load_dietconv_extension()
+
     size_rows = []
     for index, size in enumerate(SIZE_SWEEP):
         problem = {
@@ -199,7 +217,7 @@ def main() -> None:
             "stride": 1,
             "pad": 1,
         }
-        for backend in ["torch-native", "torch-unfold", "dietconv-v2"]:
+        for backend in ["torch-native", "torch-unfold", "dietconv-v1-compiled", "dietconv-v2-compiled"]:
             row = run_problem(problem, backend, threads=1, seed=args.seed + index, repeat=args.repeat, warmup=args.warmup)
             row["problem_name"] = f"scale-{size}"
             row["sweep"] = "size"
@@ -208,7 +226,7 @@ def main() -> None:
     thread_rows = []
     for problem_index, problem in enumerate(THREAD_PROBLEMS):
         for threads in THREAD_SWEEP:
-            for backend in ["torch-native", "torch-unfold", "dietconv-v2"]:
+            for backend in ["torch-native", "torch-unfold", "dietconv-v1-compiled", "dietconv-v2-compiled"]:
                 row = run_problem(
                     problem,
                     backend,
@@ -229,6 +247,8 @@ def main() -> None:
                 "size_scaling_cases": len(size_rows),
                 "thread_scaling_cases": len(thread_rows),
                 "torch_version": torch.__version__,
+                "compiled_extension": True,
+                "numeric_tolerance": NUMERIC_TOLERANCE,
             },
             handle,
             indent=2,

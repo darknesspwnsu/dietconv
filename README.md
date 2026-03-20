@@ -36,6 +36,7 @@ That lines up with the poster's claim that the biggest win is memory and data du
 - `scripts/plot_benchmarks.py`: turns benchmark CSV output into a chart
 - `scripts/showcase_cnn.py`: runs a small 3-layer CNN forward pass with both backends
 - `cpp/dietconv_benchmark.cpp`: lower-level C++ benchmark driver using Accelerate `sgemm`
+- `cpp/torch_dietconv_extension.cpp`: compiled CPU PyTorch extension for DietConv v1 and v2
 - `scripts/run_cpp_benchmarks.py`: builds and runs size-scaling and thread-scaling C++ sweeps
 - `scripts/plot_cpp_benchmarks.py`: generates plots for the C++ sweeps
 - `scripts/run_torch_benchmarks.py`: runs CPU PyTorch benchmarks against native `conv2d`, explicit `unfold`, and DietConv v2
@@ -117,19 +118,27 @@ Generated C++ artifacts:
 
 ## PyTorch op benchmark results
 
-The PyTorch path is intentionally a framework integration story, not the fastest implementation in the repo. The op in `dietconv/torch_ops.py` is a CPU tensor implementation of DietConv v2 that can be benchmarked against:
+The PyTorch path is now backed by a compiled CPU extension in `cpp/torch_dietconv_extension.cpp`. The benchmark suite compares:
 
 - native `torch.nn.functional.conv2d`
 - explicit `torch.nn.functional.unfold` lowering plus matrix multiply
-- DietConv v2 on torch tensors
+- compiled DietConv v1
+- compiled DietConv v2
 
 Key observations from the generated PyTorch sweeps:
 
-- Native `conv2d` remains the fastest option by a wide margin. That is expected because the DietConv op is written in Python over torch tensors rather than as a compiled extension.
-- Compared with explicit `unfold`, the DietConv v2 torch op uses drastically less lowering memory on every case.
-- On the size sweep, DietConv v2 is faster than `torch-unfold` at `48x48`, `64x64`, and `96x96`, while using much less workspace.
-- For `96x96`, `torch-unfold` is `5.82 ms / 10.125 MiB` and DietConv v2 is `4.54 ms / 0.036 MiB`.
-- On `alexnet-conv1`, the Python torch op is not competitive yet, which is a good argument for a future compiled PyTorch extension rather than more Python-level tuning.
+- Native `conv2d` remains the fastest option overall, which is expected because it is already a mature compiled kernel.
+- Compared with explicit `unfold`, both compiled DietConv variants use drastically less lowering memory on every case.
+- On the size sweep, compiled DietConv v1 beats `torch-unfold` at `48x48`, `64x64`, and `96x96`.
+- Compiled DietConv v2 beats `torch-unfold` at `32x32`, `64x64`, and `96x96`, and beats compiled v1 at `32x32`, `64x64`, and `96x96`.
+- For `96x96`, `torch-unfold` is `5.98 ms / 10.125 MiB`, compiled DietConv v1 is `4.19 ms / 0.036 MiB`, and compiled DietConv v2 is `3.95 ms / 0.036 MiB`.
+- On the `96x96` thread sweep, the compiled DietConv variants stay close to or ahead of `torch-unfold` at higher thread counts, but native `conv2d` is still better.
+- On `alexnet-conv1`, the compiled DietConv variants are still not competitive with native `conv2d` or `unfold`, which suggests the current extension is a useful benchmark vehicle but not yet a production-quality framework kernel.
+
+Sanity checks:
+
+- `scripts/run_torch_benchmarks.py` now compares every backend output against native `conv2d` and fails if any row exceeds a max absolute difference of `1e-4`.
+- `results/torch_benchmark_summary.json` records that tolerance alongside the benchmark metadata.
 
 Generated PyTorch artifacts:
 
@@ -144,7 +153,7 @@ This is a benchmark-and-explanation repository, not a production kernel:
 
 - the implementation is CPU-only and uses NumPy BLAS
 - the lower-level benchmark path is C++ plus Apple's Accelerate BLAS on macOS
-- the PyTorch path is a CPU-only framework integration demo, not a compiled extension
+- the PyTorch path is now a CPU-only compiled extension plus Python wrappers; it still does not implement backward passes or GPU kernels
 - the direct kernel is for correctness, not performance
 - the DietConv kernel mirrors the strip-buffer structure from the poster
 - DietConv v2 is a practical enhancement, not something claimed in the original poster
@@ -153,10 +162,10 @@ This is a benchmark-and-explanation repository, not a production kernel:
 
 ## Next steps
 
-- Turn the torch DietConv op into a compiled PyTorch extension so the framework-level benchmark story is not dominated by Python loop overhead.
-- Improve v2 autotuning so tile width adapts to thread count and problem shape more reliably; the `128x128` and `160x160` results show there is still room to choose better shapes.
+- Improve the compiled torch extension so it parallelizes more effectively and avoids temporary tensor construction in hot loops; right now it is a correct compiled baseline, not a polished framework kernel.
+- Improve v2 autotuning so tile width adapts to thread count and problem shape more reliably; the current torch and C++ results still show cases where v2 leaves performance on the table.
 - Add thread-scaling experiments that separate arithmetic time from packing time, so it is clearer when v2 wins because of cache reuse versus because of reduced memory traffic.
 - Expand the benchmark suite with more CNN-relevant layer shapes from AlexNet, VGG, ResNet, and MobileNet to show where strip-buffer convolution helps most and where large monolithic GEMMs still dominate.
 - Separate theoretical workspace from measured process memory so the repository can report both the structural duplication reduction and the real end-to-end peak RSS seen during runs.
-- Add a PyTorch inference showcase that swaps a few convolution layers between `unfold`-style lowering and DietConv-style strip buffering while preserving numerics, so the repo demonstrates the idea inside a recognizable model.
+- Add a PyTorch inference showcase that swaps a few convolution layers between native `conv2d`, `unfold`-style lowering, and DietConv-style strip buffering while preserving numerics, so the repo demonstrates the idea inside a recognizable model.
 - Document the exact correspondence between the poster pseudocode and the implementation, including filter reordering, temporary-buffer layout, and how stride affects the copied strip.

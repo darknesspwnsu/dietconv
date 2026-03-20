@@ -12,7 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 COLORS = {
     "torch-native": "#7a4e00",
     "torch-unfold": "#d96c06",
-    "dietconv-v2": "#2d4f8b",
+    "dietconv-v1-compiled": "#0d6b63",
+    "dietconv-v2-compiled": "#2d4f8b",
+}
+LABELS = {
+    "torch-native": "torch-native",
+    "torch-unfold": "torch-unfold",
+    "dietconv-v1-compiled": "dietconv-v1-compiled",
+    "dietconv-v2-compiled": "dietconv-v2-compiled",
 }
 
 
@@ -33,8 +40,8 @@ def plot_size(rows: list[dict[str, str]], output_dir: Path) -> None:
         xs = [int(row["h"]) for row in backend_rows]
         ys_ms = [float(row["mean_ms"]) for row in backend_rows]
         ys_ws = [max(float(row["workspace_mib"]), 1e-6) for row in backend_rows]
-        axes[0].plot(xs, ys_ms, marker="o", linewidth=2, color=COLORS[backend], label=backend)
-        axes[1].plot(xs, ys_ws, marker="o", linewidth=2, color=COLORS[backend], label=backend)
+        axes[0].plot(xs, ys_ms, marker="o", linewidth=2, color=COLORS[backend], label=LABELS[backend])
+        axes[1].plot(xs, ys_ws, marker="o", linewidth=2, color=COLORS[backend], label=LABELS[backend])
 
     axes[0].set_title("PyTorch runtime vs input size (1 thread)")
     axes[0].set_xlabel("Input height/width")
@@ -65,7 +72,7 @@ def plot_threads(rows: list[dict[str, str]], output_dir: Path) -> None:
         for backend, backend_rows in by_backend.items():
             xs = [int(row["threads"]) for row in backend_rows]
             ys = [float(row["mean_ms"]) for row in backend_rows]
-            axis.plot(xs, ys, marker="o", linewidth=2, color=COLORS[backend], label=backend)
+            axis.plot(xs, ys, marker="o", linewidth=2, color=COLORS[backend], label=LABELS[backend])
         axis.set_title(f"PyTorch runtime vs threads: {problem}")
         axis.set_xlabel("Threads")
         axis.set_ylabel("Mean runtime (ms)")

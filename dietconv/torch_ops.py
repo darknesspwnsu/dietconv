@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from typing import Tuple
 
 import torch
 import torch.nn.functional as F
+from torch.utils.cpp_extension import load
 
 
 def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
@@ -17,6 +19,25 @@ def _resolve_tile_out_width(out_w: int, stride: int, tile_out_width: int) -> int
         return min(tile_out_width, out_w)
     heuristic = 64 if stride == 1 else 32
     return min(heuristic, out_w)
+
+
+_EXTENSION = None
+
+
+def load_dietconv_extension():
+    global _EXTENSION
+    if _EXTENSION is None:
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        build_directory = os.path.join(root, "build", "torch_extension")
+        os.makedirs(build_directory, exist_ok=True)
+        _EXTENSION = load(
+            name="dietconv_torch_ext",
+            sources=[os.path.join(root, "cpp", "torch_dietconv_extension.cpp")],
+            build_directory=build_directory,
+            extra_cflags=["-O3", "-std=c++17"],
+            verbose=False,
+        )
+    return _EXTENSION
 
 
 def workspace_bytes_dietconv2d_v2(
@@ -34,6 +55,16 @@ def workspace_bytes_dietconv2d_v2(
     resolved_tile_w = _resolve_tile_out_width(out_w, stride_w, tile_out_width)
     tile_input_w = (resolved_tile_w - 1) * stride_w + weight.shape[-1]
     return int(x.element_size() * x.shape[-3] * weight.shape[-2] * tile_input_w)
+
+
+def workspace_bytes_dietconv2d_v1(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    padding: int | Tuple[int, int] = 0,
+) -> int:
+    pad_h, pad_w = _pair(padding)
+    padded_width = x.shape[-1] + 2 * pad_w
+    return int(x.element_size() * x.shape[-3] * weight.shape[-2] * padded_width)
 
 
 def workspace_bytes_unfold(
@@ -145,6 +176,41 @@ def dietconv2d_v2(
     return output
 
 
+def dietconv2d_v1_compiled(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+) -> torch.Tensor:
+    stride_h, stride_w = _pair(stride)
+    pad_h, pad_w = _pair(padding)
+    if stride_h != stride_w:
+        raise ValueError("Compiled DietConv v1 requires equal height/width stride.")
+    if pad_h != pad_w:
+        raise ValueError("Compiled DietConv v1 requires equal height/width padding.")
+    extension = load_dietconv_extension()
+    return extension.dietconv_v1_forward(x, weight, bias, stride_h, pad_h)
+
+
+def dietconv2d_v2_compiled(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+    tile_out_width: int = 0,
+) -> torch.Tensor:
+    stride_h, stride_w = _pair(stride)
+    pad_h, pad_w = _pair(padding)
+    if stride_h != stride_w:
+        raise ValueError("Compiled DietConv v2 requires equal height/width stride.")
+    if pad_h != pad_w:
+        raise ValueError("Compiled DietConv v2 requires equal height/width padding.")
+    extension = load_dietconv_extension()
+    return extension.dietconv_v2_forward(x, weight, bias, stride_h, pad_h, tile_out_width)
+
+
 class DietConv2dV2(torch.nn.Module):
     def __init__(
         self,
@@ -176,6 +242,83 @@ class DietConv2dV2(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return dietconv2d_v2(
+            x,
+            self.weight,
+            bias=self.bias,
+            stride=self.stride,
+            padding=self.padding,
+            tile_out_width=self.tile_out_width,
+        )
+
+
+class DietConv2dV1Compiled(torch.nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | Tuple[int, int],
+        stride: int = 1,
+        padding: int = 0,
+        bias: bool = False,
+    ) -> None:
+        super().__init__()
+        kernel_height, kernel_width = _pair(kernel_size)
+        self.stride = stride
+        self.padding = padding
+        self.weight = torch.nn.Parameter(
+            torch.empty(out_channels, in_channels, kernel_height, kernel_width)
+        )
+        if bias:
+            self.bias = torch.nn.Parameter(torch.empty(out_channels))
+        else:
+            self.register_parameter("bias", None)
+        torch.nn.init.kaiming_uniform_(self.weight, a=5**0.5)
+        if self.bias is not None:
+            fan_in = in_channels * kernel_height * kernel_width
+            bound = 1 / fan_in**0.5
+            torch.nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return dietconv2d_v1_compiled(
+            x,
+            self.weight,
+            bias=self.bias,
+            stride=self.stride,
+            padding=self.padding,
+        )
+
+
+class DietConv2dV2Compiled(torch.nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | Tuple[int, int],
+        stride: int = 1,
+        padding: int = 0,
+        bias: bool = False,
+        tile_out_width: int = 0,
+    ) -> None:
+        super().__init__()
+        kernel_height, kernel_width = _pair(kernel_size)
+        self.stride = stride
+        self.padding = padding
+        self.tile_out_width = tile_out_width
+        self.weight = torch.nn.Parameter(
+            torch.empty(out_channels, in_channels, kernel_height, kernel_width)
+        )
+        if bias:
+            self.bias = torch.nn.Parameter(torch.empty(out_channels))
+        else:
+            self.register_parameter("bias", None)
+        torch.nn.init.kaiming_uniform_(self.weight, a=5**0.5)
+        if self.bias is not None:
+            fan_in = in_channels * kernel_height * kernel_width
+            bound = 1 / fan_in**0.5
+            torch.nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return dietconv2d_v2_compiled(
             x,
             self.weight,
             bias=self.bias,
