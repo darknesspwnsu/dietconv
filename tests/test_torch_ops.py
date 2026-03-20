@@ -7,11 +7,15 @@ from dietconv.torch_ops import (
     DietConv2dV1Compiled,
     DietConv2dV2Compiled,
     DietConv2dV2,
+    autotune_dietconv_v2_tile_width,
+    can_use_dietconv_system_optimizations,
+    clear_dietconv_autotune_cache,
     prepack_dietconv_weight,
     dietconv2d_v1_compiled,
     dietconv2d_v1_compiled_prepacked,
     dietconv2d_v2,
     dietconv2d_v2_compiled,
+    dietconv2d_v2_compiled_autotuned_prepacked,
     dietconv2d_v2_compiled_prepacked,
     load_dietconv_extension,
     unfold_conv2d,
@@ -25,6 +29,7 @@ class TorchOpTests(unittest.TestCase):
 
     def setUp(self) -> None:
         torch.manual_seed(4321)
+        clear_dietconv_autotune_cache()
         self.x = torch.randn(1, 3, 10, 9)
         self.weight = torch.randn(4, 3, 3, 3)
 
@@ -96,6 +101,38 @@ class TorchOpTests(unittest.TestCase):
         expected_v2 = dietconv2d_v2_compiled(self.x, self.weight, stride=1, padding=1, tile_out_width=4)
         torch.testing.assert_close(actual_v1, expected_v1, rtol=1e-5, atol=1e-5)
         torch.testing.assert_close(actual_v2, expected_v2, rtol=1e-5, atol=1e-5)
+
+    def test_optimization_gate_matches_supported_case(self) -> None:
+        packed = prepack_dietconv_weight(self.weight)
+        self.assertTrue(
+            can_use_dietconv_system_optimizations(self.x, packed, stride=1, padding=1)
+        )
+        self.assertFalse(
+            can_use_dietconv_system_optimizations(self.x.double(), packed, stride=1, padding=1)
+        )
+
+    def test_autotuned_prepacked_path_matches_explicit_compiled_path(self) -> None:
+        packed = prepack_dietconv_weight(self.weight)
+        tile = autotune_dietconv_v2_tile_width(self.x, packed, stride=1, padding=1)
+        actual = dietconv2d_v2_compiled_autotuned_prepacked(self.x, packed, stride=1, padding=1)
+        expected = dietconv2d_v2_compiled_prepacked(
+            self.x,
+            packed,
+            stride=1,
+            padding=1,
+            tile_out_width=tile,
+        )
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+
+    def test_compiled_v2_module_autotunes_once_per_shape(self) -> None:
+        module = DietConv2dV2Compiled(3, 4, 3, stride=1, padding=1, bias=False, tile_out_width=0)
+        with torch.no_grad():
+            module.weight.copy_(self.weight)
+        _ = module(self.x)
+        first_cache = dict(module._autotuned_tile_widths)
+        _ = module(self.x)
+        self.assertEqual(first_cache, module._autotuned_tile_widths)
+        self.assertEqual(len(module._autotuned_tile_widths), 1)
 
 
 if __name__ == "__main__":

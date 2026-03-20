@@ -17,6 +17,20 @@
 #include <utility>
 #include <vector>
 
+// This standalone benchmark binary exists for two reasons:
+//
+// 1. It gives a lower-level view of the algorithm than the NumPy or PyTorch
+//    paths, with less Python overhead.
+// 2. It makes the lowering schedule explicit enough to reason about what DietConv
+//    is buying: smaller temporaries and different cache behavior than im2col.
+//
+// Three backends are benchmarked:
+//
+// - im2col: the duplication-heavy baseline that materializes the full lowered
+//   matrix for the whole output plane
+// - dietconv-v1: the poster-faithful strip-buffer schedule
+// - dietconv-v2: the tiled strip-buffer schedule with row-window reuse
+
 struct Problem {
     int c = 0;
     int h = 0;
@@ -74,6 +88,9 @@ std::size_t output_index(const Problem& problem, int out_channel, int out_y, int
 
 template <typename Worker>
 void parallel_for_rows(int threads, int rows, Worker worker) {
+    // The benchmark uses a minimal row-parallel runtime instead of OpenMP so the
+    // threading behavior is fully visible in one file. Each worker receives an
+    // inclusive-exclusive [start, end) row range.
     if (threads <= 1 || rows <= 1) {
         worker(0, 0, rows);
         return;
@@ -97,6 +114,10 @@ void parallel_for_rows(int threads, int rows, Worker worker) {
 }
 
 PreparedData prepare_problem(const Problem& problem, int seed) {
+    // Prepare:
+    // - padded_input: explicit spatial padding so hot loops never branch on edges
+    // - weight_flat:  [K, C * Fh * Fw] for im2col GEMM
+    // - kernel_slices:[Fw, K, C * Fh] for DietConv's per-kernel-column GEMMs
     PreparedData prepared;
     prepared.problem = problem;
 
@@ -141,6 +162,9 @@ PreparedData prepare_problem(const Problem& problem, int seed) {
 }
 
 RunResult run_im2col(const PreparedData& prepared, int threads) {
+    // Baseline: materialize the full lowered matrix for every output location.
+    // This is fast when the resulting GEMM is favorable, but it duplicates
+    // overlapping patches aggressively.
     const Problem& problem = prepared.problem;
     const int out_h = problem.out_h();
     const int out_w = problem.out_w();
@@ -169,6 +193,7 @@ RunResult run_im2col(const PreparedData& prepared, int threads) {
 
     std::vector<float> matrix_out(static_cast<std::size_t>(problem.k) * out_hw, 0.0f);
     cblas_sgemm(
+        // [K, C*Fh*Fw] @ [C*Fh*Fw, Hout*Wout] -> [K, Hout*Wout]
         CblasRowMajor,
         CblasNoTrans,
         CblasNoTrans,
@@ -200,6 +225,12 @@ RunResult run_im2col(const PreparedData& prepared, int threads) {
 }
 
 RunResult run_dietconv_v1(const PreparedData& prepared, int threads) {
+    // v1 copies one full-width strip for each output row:
+    //
+    //   temp = [slice_inner, padded_width]
+    //
+    // Then, for each kernel-column fx, it extracts a dense [slice_inner, out_w]
+    // lowering matrix and accumulates one GEMM into row_out.
     const Problem& problem = prepared.problem;
     const int out_h = problem.out_h();
     const int out_w = problem.out_w();
@@ -214,6 +245,7 @@ RunResult run_dietconv_v1(const PreparedData& prepared, int threads) {
 
         for (int out_y = start_row; out_y < end_row; ++out_y) {
             const int in_y = out_y * problem.stride;
+            // Copy the vertical strip needed for this output row once.
             for (int row = 0; row < slice_inner; ++row) {
                 const int channel = row / problem.fh;
                 const int fy = row % problem.fh;
@@ -223,6 +255,8 @@ RunResult run_dietconv_v1(const PreparedData& prepared, int threads) {
 
             std::fill(row_out.begin(), row_out.end(), 0.0f);
             for (int fx = 0; fx < problem.fw; ++fx) {
+                // Gather the per-kernel-column lowering matrix. Unlike im2col,
+                // we only materialize one output row's worth of columns here.
                 for (int row = 0; row < slice_inner; ++row) {
                     const float* temp_row = temp.data() + static_cast<std::size_t>(row) * padded_w + fx;
                     float* strip_row = strip.data() + static_cast<std::size_t>(row) * out_w;
@@ -231,6 +265,7 @@ RunResult run_dietconv_v1(const PreparedData& prepared, int threads) {
                     }
                 }
                 cblas_sgemm(
+                    // [K, slice_inner] @ [slice_inner, out_w] -> [K, out_w]
                     CblasRowMajor,
                     CblasNoTrans,
                     CblasNoTrans,
@@ -262,6 +297,13 @@ RunResult run_dietconv_v1(const PreparedData& prepared, int threads) {
 }
 
 RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_out_width) {
+    // v2 narrows the v1 strip into an output-width tile:
+    //
+    //   temp = [slice_inner, tile_input_width]
+    //
+    // and reuses that temporary as we move down adjacent output rows. For
+    // stride-1 cases, GEMM can consume temp directly with an x-offset. For
+    // strided cases, we still gather into strip.
     const Problem& problem = prepared.problem;
     const int out_h = problem.out_h();
     const int out_w = problem.out_w();
@@ -279,6 +321,7 @@ RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_ou
         std::vector<float> tile_out(static_cast<std::size_t>(problem.k) * max_tile_w, 0.0f);
 
         auto fill_temp_window = [&](int base_in_y, int input_x, int tile_input_w) {
+            // Full initialization for the first output row of a tile.
             for (int row = 0; row < slice_inner; ++row) {
                 const int channel = row / problem.fh;
                 const int fy = row % problem.fh;
@@ -292,6 +335,8 @@ RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_ou
                 fill_temp_window(next_base_in_y, input_x, tile_input_w);
                 return;
             }
+            // Preserve the overlap between adjacent output rows and only copy in
+            // the newly exposed source rows.
             const int preserved_rows = problem.fh - problem.stride;
             for (int channel = 0; channel < problem.c; ++channel) {
                 float* channel_base = temp.data() + static_cast<std::size_t>(channel) * problem.fh * max_tile_input_w;
@@ -329,9 +374,13 @@ RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_ou
                     const float* lowering_matrix = nullptr;
                     int lowering_leading_dim = max_tile_w;
                     if (can_use_direct_temp_gemm) {
+                        // No gather required: temp already holds the contiguous
+                        // tile window and shifting by fx selects the right slice.
                         lowering_matrix = temp.data() + fx;
                         lowering_leading_dim = max_tile_input_w;
                     } else {
+                        // Strided output still needs a compact [slice_inner, tile_w]
+                        // matrix before GEMM.
                         for (int row = 0; row < slice_inner; ++row) {
                             const float* temp_row = temp.data() + static_cast<std::size_t>(row) * max_tile_input_w + fx;
                             float* strip_row = strip.data() + static_cast<std::size_t>(row) * max_tile_w;
@@ -343,6 +392,7 @@ RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_ou
                     }
 
                     cblas_sgemm(
+                        // [K, slice_inner] @ [slice_inner, tile_w] -> [K, tile_w]
                         CblasRowMajor,
                         CblasNoTrans,
                         CblasNoTrans,
@@ -421,6 +471,8 @@ std::string get_string_arg(
 
 int main(int argc, char** argv) {
     try {
+        // The CLI stays simple because the Python harness owns the sweep logic.
+        // This binary only needs to run one fully specified convolution case.
         const auto args = parse_args(argc, argv);
         const std::string backend = get_string_arg(args, "backend", "im2col");
         const int repeat = get_int_arg(args, "repeat", 3);
@@ -487,6 +539,8 @@ int main(int argc, char** argv) {
         const double diff = max_abs_diff(measured.output, baseline.output);
 
         std::cout << std::fixed << std::setprecision(6);
+        // Emit machine-readable JSON so the Python harness can aggregate, plot,
+        // and now regenerate the README digest automatically.
         std::cout << "{"
                   << "\"backend\":\"" << backend << "\","
                   << "\"threads\":" << threads << ","

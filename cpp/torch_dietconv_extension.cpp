@@ -11,6 +11,20 @@
 
 namespace {
 
+// This file implements the CPU-only PyTorch extension used by the torch
+// benchmarks. The important distinction is:
+//
+// - DietConv v1 keeps the "one output row at a time" strip-buffer schedule
+//   from the poster. Each output row copies an entire Fh x padded_width strip
+//   for every input channel, then runs one GEMM per kernel column.
+// - DietConv v2 keeps the same per-kernel-column GEMM structure but tiles the
+//   output width. That reduces the peak temporary footprint and gives us a
+//   smaller window to keep warm in cache.
+//
+// The code is intentionally explicit about data movement. Most of the runtime
+// cost in these kernels is not arithmetic; it is deciding what to pack, when to
+// repack it, and how large a GEMM-backed lowering view should be.
+
 int64_t resolve_tile_out_width(int64_t out_w, int64_t stride, int64_t tile_out_width) {
     if (tile_out_width > 0) {
         return std::min(tile_out_width, out_w);
@@ -20,6 +34,8 @@ int64_t resolve_tile_out_width(int64_t out_w, int64_t stride, int64_t tile_out_w
 }
 
 void validate_input_and_weight(const torch::Tensor& input, const torch::Tensor& weight) {
+    // The extension only implements the narrow CPU inference subset used by the
+    // benchmarks: dense float32 NCHW input and dense float32 OIHW weights.
     TORCH_CHECK(input.device().is_cpu(), "DietConv extension only supports CPU tensors.");
     TORCH_CHECK(weight.device().is_cpu(), "DietConv extension only supports CPU tensors.");
     TORCH_CHECK(input.scalar_type() == at::kFloat, "DietConv extension expects float32 input.");
@@ -30,6 +46,11 @@ void validate_input_and_weight(const torch::Tensor& input, const torch::Tensor& 
 }
 
 void validate_input_and_packed_weight(const torch::Tensor& input, const torch::Tensor& packed_weight) {
+    // Packed weights store one matrix per kernel-column:
+    //
+    //   packed_weight[kernel_x] -> [out_channels, channels * kernel_height]
+    //
+    // That layout makes each kernel-column contribution a single GEMM.
     TORCH_CHECK(input.device().is_cpu(), "DietConv extension only supports CPU tensors.");
     TORCH_CHECK(packed_weight.device().is_cpu(), "DietConv extension only supports CPU tensors.");
     TORCH_CHECK(input.scalar_type() == at::kFloat, "DietConv extension expects float32 input.");
@@ -39,6 +60,8 @@ void validate_input_and_packed_weight(const torch::Tensor& input, const torch::T
 }
 
 torch::Tensor make_padded_input(const torch::Tensor& input, int64_t padding) {
+    // Padding is materialized once up front so the hot loops do not need bounds
+    // checks or branchy edge handling.
     if (padding == 0) {
         return input.contiguous();
     }
@@ -68,6 +91,14 @@ torch::Tensor add_bias_if_present(const torch::Tensor& output, const c10::option
 }
 
 torch::Tensor prepack_weight(torch::Tensor weight) {
+    // Reorder weights from [K, C, Fh, Fw] to [Fw, K, C * Fh].
+    //
+    // The poster groups work by kernel-column. Doing the same here lets the hot
+    // path issue:
+    //
+    //   row_out += packed_weight[kernel_x] @ lowering_slice_for_kernel_x
+    //
+    // instead of rebuilding a new view of the weights every iteration.
     validate_input_and_weight(torch::empty({1, weight.size(1), 1, 1}, weight.options()), weight);
     auto contiguous = weight.contiguous();
     const int64_t out_channels = contiguous.size(0);
@@ -104,6 +135,15 @@ torch::Tensor dietconv_v1_prepacked_forward(
     int64_t stride,
     int64_t padding
 ) {
+    // v1 is the direct strip-buffer schedule:
+    //
+    // 1. Materialize one Fh x padded_width strip per input channel for one
+    //    output row.
+    // 2. For each kernel-column, view or repack the relevant lowering slice.
+    // 3. Accumulate one GEMM into row_out.
+    //
+    // The work is parallelized over (batch, out_y) pairs so each worker owns an
+    // entire output row and can keep its scratch buffers thread-local.
     validate_input_and_packed_weight(input, packed_weight);
     TORCH_CHECK(stride > 0, "stride must be positive.");
     TORCH_CHECK(padding >= 0, "padding must be non-negative.");
@@ -134,6 +174,9 @@ torch::Tensor dietconv_v1_prepacked_forward(
     const int64_t output_batch_stride = out_channels * out_h * out_w;
 
     at::parallel_for(0, batch_size * out_h, 1, [&](int64_t begin, int64_t end) {
+        // temp:  [slice_inner, padded_width]
+        // strip: [slice_inner, out_w]    only needed when stride > 1
+        // row_out: [out_channels, out_w]
         std::vector<float> temp(static_cast<std::size_t>(slice_inner) * padded_width, 0.0f);
         std::vector<float> row_out(static_cast<std::size_t>(out_channels) * out_w, 0.0f);
         std::vector<float> strip(static_cast<std::size_t>(slice_inner) * out_w, 0.0f);
@@ -145,6 +188,9 @@ torch::Tensor dietconv_v1_prepacked_forward(
             const float* batch_padded = padded_ptr + batch * padded_batch_stride;
             float* batch_output = output_ptr + batch * output_batch_stride;
 
+            // Copy the full vertical strip needed for this output row. This is
+            // the central v1 memory tradeoff: much smaller than full im2col, but
+            // still wide enough to cover the entire output row in one go.
             for (int64_t row = 0; row < slice_inner; ++row) {
                 const int64_t channel = row / kernel_height;
                 const int64_t kernel_y = row % kernel_height;
@@ -161,9 +207,13 @@ torch::Tensor dietconv_v1_prepacked_forward(
                 const float* lowering_matrix = nullptr;
                 int lowering_leading_dim = static_cast<int>(out_w);
                 if (stride == 1) {
+                    // With stride 1 the lowering slice is already contiguous
+                    // enough for GEMM to consume directly from the strip buffer.
                     lowering_matrix = temp.data() + kernel_x;
                     lowering_leading_dim = static_cast<int>(padded_width);
                 } else {
+                    // Strided cases need a compact gather into strip so GEMM sees
+                    // a dense [slice_inner, out_w] matrix.
                     for (int64_t row = 0; row < slice_inner; ++row) {
                         const float* temp_row = temp.data() + static_cast<std::size_t>(row) * padded_width + kernel_x;
                         float* strip_row = strip.data() + static_cast<std::size_t>(row) * out_w;
@@ -175,6 +225,7 @@ torch::Tensor dietconv_v1_prepacked_forward(
                 }
 
                 cblas_sgemm(
+                    // [K, slice_inner] @ [slice_inner, out_w] -> [K, out_w]
                     CblasRowMajor,
                     CblasNoTrans,
                     CblasNoTrans,
@@ -214,6 +265,16 @@ torch::Tensor dietconv_v2_prepacked_forward(
     int64_t padding,
     int64_t tile_out_width
 ) {
+    // v2 keeps the same GEMM decomposition as v1 but shrinks the lowering
+    // window from "whole output row" to "one output tile".
+    //
+    // The main benefits are:
+    // - lower peak temporary footprint
+    // - better locality on moderate-width feature maps
+    // - a smaller working set per thread
+    //
+    // The cost is more tile-level packing work and a tile-width choice that
+    // materially affects performance.
     validate_input_and_packed_weight(input, packed_weight);
     TORCH_CHECK(stride > 0, "stride must be positive.");
     TORCH_CHECK(padding >= 0, "padding must be non-negative.");
@@ -244,10 +305,12 @@ torch::Tensor dietconv_v2_prepacked_forward(
 
     const int64_t padded_batch_stride = channels * padded_height * padded_width;
     const int64_t output_batch_stride = out_channels * out_h * out_w;
-    const bool can_slide_rows = stride > 0 && stride < kernel_height;
     const bool stride_one = stride == 1;
 
     at::parallel_for(0, batch_size * out_h, 1, [&](int64_t begin, int64_t end) {
+        // temp:    [slice_inner, max_tile_input_width]
+        // tile_out:[out_channels, resolved_tile_out_width]
+        // strip:   [slice_inner, resolved_tile_out_width] for strided cases
         std::vector<float> temp(static_cast<std::size_t>(slice_inner) * max_tile_input_width, 0.0f);
         std::vector<float> tile_out(static_cast<std::size_t>(out_channels) * resolved_tile_out_width, 0.0f);
         std::vector<float> strip(static_cast<std::size_t>(slice_inner) * resolved_tile_out_width, 0.0f);
@@ -264,6 +327,8 @@ torch::Tensor dietconv_v2_prepacked_forward(
                 const int64_t input_x = tile_start * stride;
                 const int64_t tile_input_width = (tile_width - 1) * stride + kernel_width;
 
+                // Copy only the tile-sized input window needed for this
+                // (batch, out_y, tile_start) region.
                 for (int64_t row = 0; row < slice_inner; ++row) {
                     const int64_t channel = row / kernel_height;
                     const int64_t kernel_y = row % kernel_height;
@@ -281,9 +346,13 @@ torch::Tensor dietconv_v2_prepacked_forward(
                     const float* lowering_matrix = nullptr;
                     int lowering_leading_dim = static_cast<int>(resolved_tile_out_width);
                     if (stride_one) {
+                        // For stride 1, each kernel-column can read directly from
+                        // the packed temp window with only an x-offset.
                         lowering_matrix = temp.data() + kernel_x;
                         lowering_leading_dim = static_cast<int>(max_tile_input_width);
                     } else {
+                        // For strided cases, compact the scattered columns into a
+                        // dense matrix before GEMM.
                         for (int64_t row = 0; row < slice_inner; ++row) {
                             const float* temp_row = temp.data() + static_cast<std::size_t>(row) * max_tile_input_width + kernel_x;
                             float* strip_row = strip.data() + static_cast<std::size_t>(row) * resolved_tile_out_width;
@@ -295,6 +364,7 @@ torch::Tensor dietconv_v2_prepacked_forward(
                     }
 
                     cblas_sgemm(
+                        // [K, slice_inner] @ [slice_inner, tile_width]
                         CblasRowMajor,
                         CblasNoTrans,
                         CblasNoTrans,
@@ -330,6 +400,9 @@ torch::Tensor dietconv_v2_prepacked_forward(
 }  // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    // Only the prepacked forward variants are exported. Weight prepacking is the
+    // core reusable systems trick here; it lets repeated forwards amortize the
+    // weight-layout transform instead of paying it inside the timed path.
     m.def("prepack_weight", &prepack_weight, "Prepack DietConv weights (CPU)");
     m.def("dietconv_v1_prepacked_forward", &dietconv_v1_prepacked_forward, "DietConv v1 prepacked forward (CPU)");
     m.def("dietconv_v2_prepacked_forward", &dietconv_v2_prepacked_forward, "DietConv v2 prepacked forward (CPU)");

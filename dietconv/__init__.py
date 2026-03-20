@@ -11,10 +11,15 @@ from .algorithms import (
 from .torch_ops import (
     DietConv2dV1Compiled,
     DietConv2dV2Compiled,
+    autotune_dietconv_v2_tile_width,
+    can_use_dietconv_system_optimizations,
+    clear_dietconv_autotune_cache,
     prepack_dietconv_weight,
     dietconv2d_v1_compiled,
     dietconv2d_v1_compiled_prepacked,
     dietconv2d_v2_compiled,
+    dietconv2d_v2_compiled_autotuned,
+    dietconv2d_v2_compiled_autotuned_prepacked,
     dietconv2d_v2_compiled_prepacked,
 )
 
@@ -29,9 +34,14 @@ __all__ = [
     "workspace_bytes_im2col",
     "DietConv2dV1Compiled",
     "DietConv2dV2Compiled",
+    "autotune_dietconv_v2_tile_width",
+    "can_use_dietconv_system_optimizations",
+    "clear_dietconv_autotune_cache",
     "prepack_dietconv_weight",
     "dietconv2d_v1_compiled",
     "dietconv2d_v1_compiled_prepacked",
     "dietconv2d_v2_compiled",
+    "dietconv2d_v2_compiled_autotuned",
+    "dietconv2d_v2_compiled_autotuned_prepacked",
     "dietconv2d_v2_compiled_prepacked",
 ]

@@ -134,40 +134,40 @@ This is the simple reference showcase: easy to inspect, not the most meaningful 
 
 ### PyTorch benchmark digest
 
-- On the 1-thread size sweep, compiled `v2` beats compiled `v1` on `4` of `4` tested sizes.
+- On the 1-thread size sweep, compiled `v2` beats compiled `v1` on `3` of `4` tested sizes.
 - Compiled `v2` beats explicit `torch-unfold` on `4` of `4` tested sizes.
 - The torch digest is the practical framework story: native `conv2d`, explicit `unfold`, and compiled DietConv side by side.
 
 | Input size | Fastest | native ms | unfold ms | v1 ms | v2 ms | v2 vs v1 | v2 MiB |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 32 | native | 0.12 | 1.13 | 0.20 | 0.18 | 1.1x | 0.012 |
-| 48 | v2 | 0.52 | 1.57 | 0.49 | 0.39 | 1.3x | 0.018 |
-| 64 | v2 | 0.73 | 2.44 | 0.71 | 0.59 | 1.2x | 0.024 |
-| 96 | v2 | 2.23 | 5.24 | 1.40 | 1.38 | 1.0x | 0.036 |
+| 32 | native | 0.11 | 0.59 | 0.16 | 0.15 | 1.1x | 0.012 |
+| 48 | native | 0.37 | 1.28 | 0.41 | 0.42 | 1.0x | 0.018 |
+| 64 | v2 | 1.55 | 2.54 | 1.12 | 0.81 | 1.4x | 0.024 |
+| 96 | v2 | 1.63 | 8.93 | 1.82 | 1.41 | 1.3x | 0.024 |
 
 - Numeric guardrail: current worst torch max-abs diff vs native `conv2d` is `9.53674e-05`.
 
 **Thread sweep: `alexnet-conv1`**
 
-- Compiled `v2` beats compiled `v1` on `2` of `4` tested thread counts.
+- Compiled `v2` beats compiled `v1` on `1` of `4` tested thread counts.
 
 | Threads | Fastest | native ms | unfold ms | v1 ms | v2 ms |
 | --- | --- | --- | --- | --- | --- |
-| 1 | native | 1.98 | 2.22 | 1.99 | 2.00 |
-| 2 | native | 1.05 | 1.23 | 1.96 | 2.16 |
-| 4 | native | 1.29 | 1.65 | 1.95 | 1.85 |
-| 8 | unfold | 0.88 | 0.86 | 1.88 | 1.87 |
+| 1 | unfold | 2.15 | 1.67 | 1.87 | 1.94 |
+| 2 | native | 1.00 | 1.54 | 1.81 | 1.94 |
+| 4 | native | 0.82 | 1.02 | 1.95 | 1.90 |
+| 8 | unfold | 1.33 | 0.81 | 1.94 | 1.98 |
 
 **Thread sweep: `scale-96`**
 
-- Compiled `v2` beats compiled `v1` on `3` of `4` tested thread counts.
+- Compiled `v2` beats compiled `v1` on `0` of `4` tested thread counts.
 
 | Threads | Fastest | native ms | unfold ms | v1 ms | v2 ms |
 | --- | --- | --- | --- | --- | --- |
-| 1 | native | 1.02 | 3.92 | 1.17 | 1.38 |
-| 2 | native | 1.40 | 5.82 | 1.97 | 1.93 |
-| 4 | native | 1.94 | 4.46 | 2.74 | 2.09 |
-| 8 | v2 | 2.37 | 3.54 | 2.15 | 1.73 |
+| 1 | v1 | 1.15 | 4.24 | 1.14 | 1.52 |
+| 2 | v1 | 1.24 | 3.36 | 1.18 | 1.25 |
+| 4 | native | 0.99 | 3.58 | 1.42 | 1.43 |
+| 8 | native | 1.15 | 2.71 | 1.47 | 1.48 |
 
 ![PyTorch size scaling](results/torch_size_scaling.png)
 

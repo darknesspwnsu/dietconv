@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Tuple
 
 import torch
@@ -22,6 +23,7 @@ def _resolve_tile_out_width(out_w: int, stride: int, tile_out_width: int) -> int
 
 
 _EXTENSION = None
+_V2_TILE_CACHE: dict[tuple[int, ...], int] = {}
 
 
 def load_dietconv_extension():
@@ -45,6 +47,131 @@ def load_dietconv_extension():
 def prepack_dietconv_weight(weight: torch.Tensor) -> torch.Tensor:
     extension = load_dietconv_extension()
     return extension.prepack_weight(weight)
+
+
+def can_use_dietconv_system_optimizations(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+) -> bool:
+    stride_h, stride_w = _pair(stride)
+    pad_h, pad_w = _pair(padding)
+    if x.device.type != "cpu" or packed_weight.device.type != "cpu":
+        return False
+    if x.dtype != torch.float32 or packed_weight.dtype != torch.float32:
+        return False
+    if x.dim() != 4 or packed_weight.dim() != 3:
+        return False
+    if stride_h != stride_w or pad_h != pad_w:
+        return False
+    if stride_h <= 0 or pad_h < 0:
+        return False
+    if x.numel() == 0 or packed_weight.numel() == 0:
+        return False
+    if packed_weight.shape[2] % x.shape[1] != 0:
+        return False
+    kernel_height = packed_weight.shape[2] // x.shape[1]
+    kernel_width = packed_weight.shape[0]
+    padded_h = x.shape[-2] + 2 * pad_h
+    padded_w = x.shape[-1] + 2 * pad_w
+    if padded_h < kernel_height or padded_w < kernel_width:
+        return False
+    return True
+
+
+def _v2_cache_key(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+    stride: int,
+    padding: int,
+) -> tuple[int, ...]:
+    return (
+        int(x.shape[0]),
+        int(x.shape[1]),
+        int(x.shape[2]),
+        int(x.shape[3]),
+        int(packed_weight.shape[0]),
+        int(packed_weight.shape[1]),
+        int(packed_weight.shape[2]),
+        int(stride),
+        int(padding),
+        int(torch.get_num_threads()),
+    )
+
+
+def candidate_tile_out_widths(out_w: int, stride: int) -> list[int]:
+    base = [16, 24, 32, 48, 64, 96, 128, out_w]
+    if stride > 1:
+        base = [8, 16, 24, 32, 48, out_w]
+    return sorted({min(width, out_w) for width in base if width > 0})
+
+
+def clear_dietconv_autotune_cache() -> None:
+    _V2_TILE_CACHE.clear()
+
+
+def autotune_dietconv_v2_tile_width(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+    repeat: int = 1,
+    warmup: int = 1,
+    reuse_cache: bool = True,
+) -> int:
+    stride_h, stride_w = _pair(stride)
+    pad_h, pad_w = _pair(padding)
+    if stride_h != stride_w:
+        raise ValueError("DietConv v2 autotune requires equal height/width stride.")
+    if pad_h != pad_w:
+        raise ValueError("DietConv v2 autotune requires equal height/width padding.")
+
+    out_w = (x.shape[-1] + 2 * pad_w - packed_weight.shape[0]) // stride_w + 1
+    if not can_use_dietconv_system_optimizations(x, packed_weight, stride=stride_w, padding=pad_w):
+        return _resolve_tile_out_width(out_w, stride_w, 0)
+    key = _v2_cache_key(x, packed_weight, stride_w, pad_w)
+    if reuse_cache and key in _V2_TILE_CACHE:
+        return _V2_TILE_CACHE[key]
+
+    trials: list[tuple[int, float, int]] = []
+    with torch.no_grad():
+        for width in candidate_tile_out_widths(out_w, stride_w):
+            for _ in range(warmup):
+                dietconv2d_v2_compiled_prepacked(
+                    x,
+                    packed_weight,
+                    stride=stride_w,
+                    padding=pad_w,
+                    tile_out_width=width,
+                )
+            timings = []
+            for _ in range(repeat):
+                start = time.perf_counter()
+                dietconv2d_v2_compiled_prepacked(
+                    x,
+                    packed_weight,
+                    stride=stride_w,
+                    padding=pad_w,
+                    tile_out_width=width,
+                )
+                timings.append((time.perf_counter() - start) * 1000.0)
+            mean_ms = sum(timings) / len(timings)
+            workspace_bytes = workspace_bytes_dietconv2d_v2(
+                x,
+                packed_weight,
+                stride=stride_w,
+                padding=pad_w,
+                tile_out_width=width,
+            )
+            trials.append((width, mean_ms, workspace_bytes))
+
+    fastest_ms = min(mean_ms for _, mean_ms, _ in trials)
+    viable = [trial for trial in trials if trial[1] <= fastest_ms * 1.05]
+    chosen = min(viable, key=lambda trial: (trial[2], trial[0]))[0]
+    if reuse_cache:
+        _V2_TILE_CACHE[key] = chosen
+    return chosen
 
 
 def workspace_bytes_dietconv2d_v2(
@@ -254,6 +381,64 @@ def dietconv2d_v2_compiled_prepacked(
     return extension.dietconv_v2_prepacked_forward(x, packed_weight, bias, stride_h, pad_h, tile_out_width)
 
 
+def dietconv2d_v2_compiled_autotuned(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+    repeat: int = 1,
+    warmup: int = 1,
+    reuse_cache: bool = True,
+) -> torch.Tensor:
+    packed_weight = prepack_dietconv_weight(weight)
+    return dietconv2d_v2_compiled_autotuned_prepacked(
+        x,
+        packed_weight,
+        bias=bias,
+        stride=stride,
+        padding=padding,
+        repeat=repeat,
+        warmup=warmup,
+        reuse_cache=reuse_cache,
+    )
+
+
+def dietconv2d_v2_compiled_autotuned_prepacked(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+    repeat: int = 1,
+    warmup: int = 1,
+    reuse_cache: bool = True,
+) -> torch.Tensor:
+    stride_h, stride_w = _pair(stride)
+    pad_h, pad_w = _pair(padding)
+    if stride_h != stride_w:
+        raise ValueError("Compiled DietConv v2 autotune requires equal height/width stride.")
+    if pad_h != pad_w:
+        raise ValueError("Compiled DietConv v2 autotune requires equal height/width padding.")
+    tile_out_width = autotune_dietconv_v2_tile_width(
+        x,
+        packed_weight,
+        stride=stride_h,
+        padding=pad_h,
+        repeat=repeat,
+        warmup=warmup,
+        reuse_cache=reuse_cache,
+    )
+    return dietconv2d_v2_compiled_prepacked(
+        x,
+        packed_weight,
+        bias=bias,
+        stride=stride_h,
+        padding=pad_h,
+        tile_out_width=tile_out_width,
+    )
+
+
 class DietConv2dV2(torch.nn.Module):
     def __init__(
         self,
@@ -360,6 +545,7 @@ class DietConv2dV2Compiled(torch.nn.Module):
         )
         self.register_buffer("_packed_weight", torch.empty(0), persistent=False)
         self._packed_weight_version = -1
+        self._autotuned_tile_widths: dict[tuple[int, ...], int] = {}
         if bias:
             self.bias = torch.nn.Parameter(torch.empty(out_channels))
         else:
@@ -374,14 +560,43 @@ class DietConv2dV2Compiled(torch.nn.Module):
         if self._packed_weight_version != self.weight._version:
             self._packed_weight = prepack_dietconv_weight(self.weight)
             self._packed_weight_version = self.weight._version
+            self._autotuned_tile_widths.clear()
+
+    def _resolve_runtime_tile_width(self, x: torch.Tensor) -> int:
+        if self.tile_out_width > 0:
+            return self.tile_out_width
+        if not can_use_dietconv_system_optimizations(
+            x,
+            self._packed_weight,
+            stride=self.stride,
+            padding=self.padding,
+        ):
+            out_w = (x.shape[-1] + 2 * self.padding - self.weight.shape[-1]) // self.stride + 1
+            return _resolve_tile_out_width(out_w, self.stride, 0)
+        cache_key = (
+            int(x.shape[0]),
+            int(x.shape[1]),
+            int(x.shape[2]),
+            int(x.shape[3]),
+            int(torch.get_num_threads()),
+        )
+        if cache_key not in self._autotuned_tile_widths:
+            self._autotuned_tile_widths[cache_key] = autotune_dietconv_v2_tile_width(
+                x,
+                self._packed_weight,
+                stride=self.stride,
+                padding=self.padding,
+            )
+        return self._autotuned_tile_widths[cache_key]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._refresh_packed_weight()
+        tile_out_width = self._resolve_runtime_tile_width(x)
         return dietconv2d_v2_compiled_prepacked(
             x,
             self._packed_weight,
             bias=self.bias,
             stride=self.stride,
             padding=self.padding,
-            tile_out_width=self.tile_out_width,
+            tile_out_width=tile_out_width,
         )
