@@ -27,6 +27,7 @@ _EXTENSION = None
 def load_dietconv_extension():
     global _EXTENSION
     if _EXTENSION is None:
+        os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         build_directory = os.path.join(root, "build", "torch_extension")
         os.makedirs(build_directory, exist_ok=True)
@@ -34,10 +35,16 @@ def load_dietconv_extension():
             name="dietconv_torch_ext",
             sources=[os.path.join(root, "cpp", "torch_dietconv_extension.cpp")],
             build_directory=build_directory,
-            extra_cflags=["-O3", "-std=c++17"],
+            extra_cflags=["-O3", "-std=c++17", "-Wno-deprecated-declarations"],
+            extra_ldflags=["-framework", "Accelerate"],
             verbose=False,
         )
     return _EXTENSION
+
+
+def prepack_dietconv_weight(weight: torch.Tensor) -> torch.Tensor:
+    extension = load_dietconv_extension()
+    return extension.prepack_weight(weight)
 
 
 def workspace_bytes_dietconv2d_v2(
@@ -183,6 +190,23 @@ def dietconv2d_v1_compiled(
     stride: int = 1,
     padding: int | Tuple[int, int] = 0,
 ) -> torch.Tensor:
+    packed_weight = prepack_dietconv_weight(weight)
+    return dietconv2d_v1_compiled_prepacked(
+        x,
+        packed_weight,
+        bias=bias,
+        stride=stride,
+        padding=padding,
+    )
+
+
+def dietconv2d_v1_compiled_prepacked(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+) -> torch.Tensor:
     stride_h, stride_w = _pair(stride)
     pad_h, pad_w = _pair(padding)
     if stride_h != stride_w:
@@ -190,12 +214,31 @@ def dietconv2d_v1_compiled(
     if pad_h != pad_w:
         raise ValueError("Compiled DietConv v1 requires equal height/width padding.")
     extension = load_dietconv_extension()
-    return extension.dietconv_v1_forward(x, weight, bias, stride_h, pad_h)
+    return extension.dietconv_v1_prepacked_forward(x, packed_weight, bias, stride_h, pad_h)
 
 
 def dietconv2d_v2_compiled(
     x: torch.Tensor,
     weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+    tile_out_width: int = 0,
+) -> torch.Tensor:
+    packed_weight = prepack_dietconv_weight(weight)
+    return dietconv2d_v2_compiled_prepacked(
+        x,
+        packed_weight,
+        bias=bias,
+        stride=stride,
+        padding=padding,
+        tile_out_width=tile_out_width,
+    )
+
+
+def dietconv2d_v2_compiled_prepacked(
+    x: torch.Tensor,
+    packed_weight: torch.Tensor,
     bias: torch.Tensor | None = None,
     stride: int = 1,
     padding: int | Tuple[int, int] = 0,
@@ -208,7 +251,7 @@ def dietconv2d_v2_compiled(
     if pad_h != pad_w:
         raise ValueError("Compiled DietConv v2 requires equal height/width padding.")
     extension = load_dietconv_extension()
-    return extension.dietconv_v2_forward(x, weight, bias, stride_h, pad_h, tile_out_width)
+    return extension.dietconv_v2_prepacked_forward(x, packed_weight, bias, stride_h, pad_h, tile_out_width)
 
 
 class DietConv2dV2(torch.nn.Module):
@@ -268,6 +311,8 @@ class DietConv2dV1Compiled(torch.nn.Module):
         self.weight = torch.nn.Parameter(
             torch.empty(out_channels, in_channels, kernel_height, kernel_width)
         )
+        self.register_buffer("_packed_weight", torch.empty(0), persistent=False)
+        self._packed_weight_version = -1
         if bias:
             self.bias = torch.nn.Parameter(torch.empty(out_channels))
         else:
@@ -278,10 +323,16 @@ class DietConv2dV1Compiled(torch.nn.Module):
             bound = 1 / fan_in**0.5
             torch.nn.init.uniform_(self.bias, -bound, bound)
 
+    def _refresh_packed_weight(self) -> None:
+        if self._packed_weight_version != self.weight._version:
+            self._packed_weight = prepack_dietconv_weight(self.weight)
+            self._packed_weight_version = self.weight._version
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return dietconv2d_v1_compiled(
+        self._refresh_packed_weight()
+        return dietconv2d_v1_compiled_prepacked(
             x,
-            self.weight,
+            self._packed_weight,
             bias=self.bias,
             stride=self.stride,
             padding=self.padding,
@@ -307,6 +358,8 @@ class DietConv2dV2Compiled(torch.nn.Module):
         self.weight = torch.nn.Parameter(
             torch.empty(out_channels, in_channels, kernel_height, kernel_width)
         )
+        self.register_buffer("_packed_weight", torch.empty(0), persistent=False)
+        self._packed_weight_version = -1
         if bias:
             self.bias = torch.nn.Parameter(torch.empty(out_channels))
         else:
@@ -317,10 +370,16 @@ class DietConv2dV2Compiled(torch.nn.Module):
             bound = 1 / fan_in**0.5
             torch.nn.init.uniform_(self.bias, -bound, bound)
 
+    def _refresh_packed_weight(self) -> None:
+        if self._packed_weight_version != self.weight._version:
+            self._packed_weight = prepack_dietconv_weight(self.weight)
+            self._packed_weight_version = self.weight._version
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return dietconv2d_v2_compiled(
+        self._refresh_packed_weight()
+        return dietconv2d_v2_compiled_prepacked(
             x,
-            self.weight,
+            self._packed_weight,
             bias=self.bias,
             stride=self.stride,
             padding=self.padding,

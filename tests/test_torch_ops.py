@@ -7,9 +7,12 @@ from dietconv.torch_ops import (
     DietConv2dV1Compiled,
     DietConv2dV2Compiled,
     DietConv2dV2,
+    prepack_dietconv_weight,
     dietconv2d_v1_compiled,
+    dietconv2d_v1_compiled_prepacked,
     dietconv2d_v2,
     dietconv2d_v2_compiled,
+    dietconv2d_v2_compiled_prepacked,
     load_dietconv_extension,
     unfold_conv2d,
 )
@@ -80,6 +83,15 @@ class TorchOpTests(unittest.TestCase):
             module_v2.weight.copy_(self.weight)
         actual_v1 = module_v1(self.x)
         actual_v2 = module_v2(self.x)
+        expected_v1 = dietconv2d_v1_compiled(self.x, self.weight, stride=1, padding=1)
+        expected_v2 = dietconv2d_v2_compiled(self.x, self.weight, stride=1, padding=1, tile_out_width=4)
+        torch.testing.assert_close(actual_v1, expected_v1, rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(actual_v2, expected_v2, rtol=1e-5, atol=1e-5)
+
+    def test_prepacked_compiled_paths_match_wrappers(self) -> None:
+        packed = prepack_dietconv_weight(self.weight)
+        actual_v1 = dietconv2d_v1_compiled_prepacked(self.x, packed, stride=1, padding=1)
+        actual_v2 = dietconv2d_v2_compiled_prepacked(self.x, packed, stride=1, padding=1, tile_out_width=4)
         expected_v1 = dietconv2d_v1_compiled(self.x, self.weight, stride=1, padding=1)
         expected_v2 = dietconv2d_v2_compiled(self.x, self.weight, stride=1, padding=1, tile_out_width=4)
         torch.testing.assert_close(actual_v1, expected_v1, rtol=1e-5, atol=1e-5)

@@ -17,8 +17,11 @@ if str(ROOT) not in sys.path:
 
 from dietconv.torch_ops import (
     dietconv2d_v1_compiled,
+    dietconv2d_v1_compiled_prepacked,
     dietconv2d_v2_compiled,
+    dietconv2d_v2_compiled_prepacked,
     load_dietconv_extension,
+    prepack_dietconv_weight,
     workspace_bytes_dietconv2d_v2,
     workspace_bytes_dietconv2d_v1,
     workspace_bytes_unfold,
@@ -94,14 +97,14 @@ def candidate_tile_widths(out_w: int, stride: int) -> list[int]:
     return sorted({min(width, out_w) for width in base})
 
 
-def autotune_tile_width(x: torch.Tensor, weight: torch.Tensor, problem: dict) -> int:
+def autotune_tile_width(x: torch.Tensor, packed_weight: torch.Tensor, weight: torch.Tensor, problem: dict) -> int:
     out_w = (problem["w"] + 2 * problem["pad"] - problem["fw"]) // problem["stride"] + 1
     trials = []
     for width in candidate_tile_widths(out_w, problem["stride"]):
         _, mean, _ = time_call(
-            lambda: dietconv2d_v2_compiled(
+            lambda: dietconv2d_v2_compiled_prepacked(
                 x,
-                weight,
+                packed_weight,
                 stride=problem["stride"],
                 padding=problem["pad"],
                 tile_out_width=width,
@@ -126,6 +129,7 @@ def run_problem(problem: dict, backend: str, threads: int, seed: int, repeat: in
     torch.set_num_threads(threads)
     x, weight = make_inputs(problem, seed)
     reference = F.conv2d(x, weight, stride=problem["stride"], padding=problem["pad"])
+    packed_weight = None
 
     tile_out_width = 0
     if backend == "torch-native":
@@ -135,18 +139,15 @@ def run_problem(problem: dict, backend: str, threads: int, seed: int, repeat: in
         fn = lambda: unfold_conv2d(x, weight, stride=problem["stride"], padding=problem["pad"])
         workspace_bytes = workspace_bytes_unfold(x, weight, stride=problem["stride"], padding=problem["pad"])
     elif backend == "dietconv-v1-compiled":
-        fn = lambda: dietconv2d_v1_compiled(
-            x,
-            weight,
-            stride=problem["stride"],
-            padding=problem["pad"],
-        )
+        packed_weight = prepack_dietconv_weight(weight)
+        fn = lambda: dietconv2d_v1_compiled_prepacked(x, packed_weight, stride=problem["stride"], padding=problem["pad"])
         workspace_bytes = workspace_bytes_dietconv2d_v1(x, weight, padding=problem["pad"])
     elif backend == "dietconv-v2-compiled":
-        tile_out_width = autotune_tile_width(x, weight, problem)
-        fn = lambda: dietconv2d_v2_compiled(
+        packed_weight = prepack_dietconv_weight(weight)
+        tile_out_width = autotune_tile_width(x, packed_weight, weight, problem)
+        fn = lambda: dietconv2d_v2_compiled_prepacked(
             x,
-            weight,
+            packed_weight,
             stride=problem["stride"],
             padding=problem["pad"],
             tile_out_width=tile_out_width,

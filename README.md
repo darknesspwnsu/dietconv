@@ -118,7 +118,13 @@ Generated C++ artifacts:
 
 ## PyTorch op benchmark results
 
-The PyTorch path is now backed by a compiled CPU extension in `cpp/torch_dietconv_extension.cpp`. The benchmark suite compares:
+The PyTorch path is now backed by a compiled CPU extension in `cpp/torch_dietconv_extension.cpp`. It uses:
+
+- prepacked filter layouts shared by compiled DietConv v1 and v2
+- BLAS-backed GEMMs through Accelerate
+- compiled outer-loop control flow instead of Python loops
+
+The benchmark suite compares:
 
 - native `torch.nn.functional.conv2d`
 - explicit `torch.nn.functional.unfold` lowering plus matrix multiply
@@ -127,18 +133,19 @@ The PyTorch path is now backed by a compiled CPU extension in `cpp/torch_dietcon
 
 Key observations from the generated PyTorch sweeps:
 
-- Native `conv2d` remains the fastest option overall, which is expected because it is already a mature compiled kernel.
+- Native `conv2d` remains the strongest general-purpose baseline, especially on the larger-kernel AlexNet-style thread sweep.
 - Compared with explicit `unfold`, both compiled DietConv variants use drastically less lowering memory on every case.
-- On the size sweep, compiled DietConv v1 beats `torch-unfold` at `48x48`, `64x64`, and `96x96`.
-- Compiled DietConv v2 beats `torch-unfold` at `32x32`, `64x64`, and `96x96`, and beats compiled v1 at `32x32`, `64x64`, and `96x96`.
-- For `96x96`, `torch-unfold` is `5.98 ms / 10.125 MiB`, compiled DietConv v1 is `4.19 ms / 0.036 MiB`, and compiled DietConv v2 is `3.95 ms / 0.036 MiB`.
-- On the `96x96` thread sweep, the compiled DietConv variants stay close to or ahead of `torch-unfold` at higher thread counts, but native `conv2d` is still better.
-- On `alexnet-conv1`, the compiled DietConv variants are still not competitive with native `conv2d` or `unfold`, which suggests the current extension is a useful benchmark vehicle but not yet a production-quality framework kernel.
+- On the 1-thread size sweep, compiled DietConv v1 and v2 now beat `torch-unfold` at every tested size.
+- Compiled DietConv v2 beats compiled v1 at `32x32`, `48x48`, `64x64`, and `96x96`.
+- For `96x96`, `torch-native` is `2.23 ms`, `torch-unfold` is `5.24 ms / 10.125 MiB`, compiled DietConv v1 is `1.40 ms / 0.036 MiB`, and compiled DietConv v2 is `1.38 ms / 0.036 MiB`.
+- On `alexnet-conv1`, the optimized compiled DietConv variants are now close to native `conv2d` at 1 thread, but they still do not scale as well as native `conv2d` or `unfold` at higher thread counts.
+- On the `96x96` thread sweep, compiled DietConv v1 and v2 stay well below `torch-unfold` at every tested thread count, though native `conv2d` is still generally strongest.
 
 Sanity checks:
 
 - `scripts/run_torch_benchmarks.py` now compares every backend output against native `conv2d` and fails if any row exceeds a max absolute difference of `1e-4`.
 - `results/torch_benchmark_summary.json` records that tolerance alongside the benchmark metadata.
+- The current generated torch CSVs stay within tolerance: worst-case max absolute difference is `6.87e-05` on the size sweep and `9.54e-05` on the thread sweep.
 
 Generated PyTorch artifacts:
 
@@ -154,6 +161,7 @@ This is a benchmark-and-explanation repository, not a production kernel:
 - the implementation is CPU-only and uses NumPy BLAS
 - the lower-level benchmark path is C++ plus Apple's Accelerate BLAS on macOS
 - the PyTorch path is now a CPU-only compiled extension plus Python wrappers; it still does not implement backward passes or GPU kernels
+- the torch benchmarks are inference-oriented and benefit from weight prepacking outside the timed region
 - the direct kernel is for correctness, not performance
 - the DietConv kernel mirrors the strip-buffer structure from the poster
 - DietConv v2 is a practical enhancement, not something claimed in the original poster
@@ -162,7 +170,8 @@ This is a benchmark-and-explanation repository, not a production kernel:
 
 ## Next steps
 
-- Improve the compiled torch extension so it parallelizes more effectively and avoids temporary tensor construction in hot loops; right now it is a correct compiled baseline, not a polished framework kernel.
+- Improve the compiled torch extension so it scales better with thread count on AlexNet-style large-kernel layers and batch sizes greater than `1`.
+- Extend the optimized torch path with persistent module-level prepacking for more realistic repeated-inference or fine-tuning scenarios beyond the benchmark harness.
 - Improve v2 autotuning so tile width adapts to thread count and problem shape more reliably; the current torch and C++ results still show cases where v2 leaves performance on the table.
 - Add thread-scaling experiments that separate arithmetic time from packing time, so it is clearer when v2 wins because of cache reuse versus because of reduced memory traffic.
 - Expand the benchmark suite with more CNN-relevant layer shapes from AlexNet, VGG, ResNet, and MobileNet to show where strip-buffer convolution helps most and where large monolithic GEMMs still dominate.

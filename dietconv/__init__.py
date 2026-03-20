@@ -11,8 +11,11 @@ from .algorithms import (
 from .torch_ops import (
     DietConv2dV1Compiled,
     DietConv2dV2Compiled,
+    prepack_dietconv_weight,
     dietconv2d_v1_compiled,
+    dietconv2d_v1_compiled_prepacked,
     dietconv2d_v2_compiled,
+    dietconv2d_v2_compiled_prepacked,
 )
 
 __all__ = [
@@ -26,6 +29,9 @@ __all__ = [
     "workspace_bytes_im2col",
     "DietConv2dV1Compiled",
     "DietConv2dV2Compiled",
+    "prepack_dietconv_weight",
     "dietconv2d_v1_compiled",
+    "dietconv2d_v1_compiled_prepacked",
     "dietconv2d_v2_compiled",
+    "dietconv2d_v2_compiled_prepacked",
 ]
