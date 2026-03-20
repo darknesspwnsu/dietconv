@@ -1,0 +1,90 @@
+{
+  "cpp": {
+    "repeat": 3,
+    "warmup": 1,
+    "seed": 101,
+    "problems": [
+      {
+        "problem_name": "scale-64",
+        "c": 32,
+        "h": 64,
+        "w": 64,
+        "k": 64,
+        "fh": 3,
+        "fw": 3,
+        "stride": 1,
+        "pad": 1,
+        "threads": 1
+      },
+      {
+        "problem_name": "scale-96",
+        "c": 32,
+        "h": 96,
+        "w": 96,
+        "k": 64,
+        "fh": 3,
+        "fw": 3,
+        "stride": 1,
+        "pad": 1,
+        "threads": 1
+      },
+      {
+        "problem_name": "alexnet-conv1",
+        "c": 3,
+        "h": 227,
+        "w": 227,
+        "k": 96,
+        "fh": 11,
+        "fw": 11,
+        "stride": 4,
+        "pad": 0,
+        "threads": 1
+      }
+    ],
+    "tile_out_widths": [8, 16, 24, 32, 48, 64, 96, 128]
+  },
+  "torch": {
+    "repeat": 3,
+    "warmup": 1,
+    "seed": 211,
+    "problems": [
+      {
+        "problem_name": "scale-64",
+        "c": 32,
+        "h": 64,
+        "w": 64,
+        "k": 64,
+        "fh": 3,
+        "fw": 3,
+        "stride": 1,
+        "pad": 1,
+        "threads": 1
+      },
+      {
+        "problem_name": "scale-96",
+        "c": 32,
+        "h": 96,
+        "w": 96,
+        "k": 64,
+        "fh": 3,
+        "fw": 3,
+        "stride": 1,
+        "pad": 1,
+        "threads": 1
+      },
+      {
+        "problem_name": "alexnet-conv1",
+        "c": 3,
+        "h": 227,
+        "w": 227,
+        "k": 96,
+        "fh": 11,
+        "fw": 11,
+        "stride": 4,
+        "pad": 0,
+        "threads": 1
+      }
+    ],
+    "tile_out_widths": [8, 16, 24, 32, 48, 64, 96, 128]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "numpy": {
+    "repeat": 5,
+    "warmup": 1,
+    "seed": 0
+  },
+  "cnn_showcase": {
+    "seed": 7
+  },
+  "cpp": {
+    "repeat": 3,
+    "warmup": 1,
+    "seed": 17
+  },
+  "torch": {
+    "repeat": 3,
+    "warmup": 1,
+    "seed": 29
+  },
+  "torch_memory": {
+    "repeat": 1,
+    "warmup": 1,
+    "seed": 41
+  }
+}
