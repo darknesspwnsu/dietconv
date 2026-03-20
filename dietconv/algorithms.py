@@ -106,7 +106,7 @@ def workspace_bytes_dietconv_v2(
     kernel_width = weight.shape[3]
     out_w = (padded_width - kernel_width) // stride + 1
     tile_w = _resolve_tile_out_width(out_w, stride, tile_out_width)
-    tile_input_width = tile_w * stride + kernel_width - 1
+    tile_input_width = (tile_w - 1) * stride + kernel_width
     return int(x.dtype.itemsize * channels * kernel_height * tile_input_width)
 
 
@@ -222,7 +222,7 @@ def conv2d_dietconv_v2(
         for tile_start in range(0, out_w, tile_out_width):
             tile_w = min(tile_out_width, out_w - tile_start)
             input_col = tile_start * stride
-            tile_input_width = tile_w * stride + kernel_width - 1
+            tile_input_width = (tile_w - 1) * stride + kernel_width
             temp = np.ascontiguousarray(
                 padded[
                     :,

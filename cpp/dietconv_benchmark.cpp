@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <functional>
 #include <iomanip>
@@ -267,7 +268,9 @@ RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_ou
     const int slice_inner = problem.slice_inner();
     const int resolved_tile_out_width = resolve_tile_out_width(problem, tile_out_width);
     const int max_tile_w = resolved_tile_out_width;
-    const int max_tile_input_w = max_tile_w * problem.stride + problem.fw - 1;
+    const int max_tile_input_w = (max_tile_w - 1) * problem.stride + problem.fw;
+    const bool can_slide_rows = problem.stride > 0 && problem.stride < problem.fh;
+    const bool can_use_direct_temp_gemm = problem.stride == 1;
 
     std::vector<float> output(static_cast<std::size_t>(problem.k) * out_h * out_w, 0.0f);
     parallel_for_rows(threads, out_h, [&](int, int start_row, int end_row) {
@@ -275,29 +278,70 @@ RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_ou
         std::vector<float> strip(static_cast<std::size_t>(slice_inner) * max_tile_w, 0.0f);
         std::vector<float> tile_out(static_cast<std::size_t>(problem.k) * max_tile_w, 0.0f);
 
-        for (int out_y = start_row; out_y < end_row; ++out_y) {
-            const int in_y = out_y * problem.stride;
-            for (int tile_start = 0; tile_start < out_w; tile_start += resolved_tile_out_width) {
-                const int tile_w = std::min(resolved_tile_out_width, out_w - tile_start);
-                const int input_x = tile_start * problem.stride;
-                const int tile_input_w = tile_w * problem.stride + problem.fw - 1;
+        auto fill_temp_window = [&](int base_in_y, int input_x, int tile_input_w) {
+            for (int row = 0; row < slice_inner; ++row) {
+                const int channel = row / problem.fh;
+                const int fy = row % problem.fh;
+                const float* src = &prepared.padded_input[padded_index(problem, channel, base_in_y + fy, input_x)];
+                std::copy(src, src + tile_input_w, temp.begin() + static_cast<std::size_t>(row) * max_tile_input_w);
+            }
+        };
 
-                for (int row = 0; row < slice_inner; ++row) {
-                    const int channel = row / problem.fh;
-                    const int fy = row % problem.fh;
-                    const float* src = &prepared.padded_input[padded_index(problem, channel, in_y + fy, input_x)];
-                    std::copy(src, src + tile_input_w, temp.begin() + static_cast<std::size_t>(row) * max_tile_input_w);
+        auto slide_temp_window = [&](int next_base_in_y, int input_x, int tile_input_w) {
+            if (!can_slide_rows) {
+                fill_temp_window(next_base_in_y, input_x, tile_input_w);
+                return;
+            }
+            const int preserved_rows = problem.fh - problem.stride;
+            for (int channel = 0; channel < problem.c; ++channel) {
+                float* channel_base = temp.data() + static_cast<std::size_t>(channel) * problem.fh * max_tile_input_w;
+                std::memmove(
+                    channel_base,
+                    channel_base + static_cast<std::size_t>(problem.stride) * max_tile_input_w,
+                    static_cast<std::size_t>(preserved_rows) * max_tile_input_w * sizeof(float)
+                );
+                for (int fy = preserved_rows; fy < problem.fh; ++fy) {
+                    const int src_y = next_base_in_y + fy;
+                    float* dst = channel_base + static_cast<std::size_t>(fy) * max_tile_input_w;
+                    const float* src = &prepared.padded_input[padded_index(problem, channel, src_y, input_x)];
+                    std::copy(src, src + tile_input_w, dst);
+                }
+            }
+        };
+
+        for (int tile_start = 0; tile_start < out_w; tile_start += resolved_tile_out_width) {
+            const int tile_w = std::min(resolved_tile_out_width, out_w - tile_start);
+            const int input_x = tile_start * problem.stride;
+            const int tile_input_w = (tile_w - 1) * problem.stride + problem.fw;
+
+            bool temp_initialized = false;
+            for (int out_y = start_row; out_y < end_row; ++out_y) {
+                const int in_y = out_y * problem.stride;
+                if (!temp_initialized) {
+                    fill_temp_window(in_y, input_x, tile_input_w);
+                    temp_initialized = true;
+                } else {
+                    slide_temp_window(in_y, input_x, tile_input_w);
                 }
 
                 std::fill(tile_out.begin(), tile_out.end(), 0.0f);
                 for (int fx = 0; fx < problem.fw; ++fx) {
-                    for (int row = 0; row < slice_inner; ++row) {
-                        const float* temp_row = temp.data() + static_cast<std::size_t>(row) * max_tile_input_w + fx;
-                        float* strip_row = strip.data() + static_cast<std::size_t>(row) * max_tile_w;
-                        for (int out_x = 0; out_x < tile_w; ++out_x) {
-                            strip_row[out_x] = temp_row[out_x * problem.stride];
+                    const float* lowering_matrix = nullptr;
+                    int lowering_leading_dim = max_tile_w;
+                    if (can_use_direct_temp_gemm) {
+                        lowering_matrix = temp.data() + fx;
+                        lowering_leading_dim = max_tile_input_w;
+                    } else {
+                        for (int row = 0; row < slice_inner; ++row) {
+                            const float* temp_row = temp.data() + static_cast<std::size_t>(row) * max_tile_input_w + fx;
+                            float* strip_row = strip.data() + static_cast<std::size_t>(row) * max_tile_w;
+                            for (int out_x = 0; out_x < tile_w; ++out_x) {
+                                strip_row[out_x] = temp_row[out_x * problem.stride];
+                            }
                         }
+                        lowering_matrix = strip.data();
                     }
+
                     cblas_sgemm(
                         CblasRowMajor,
                         CblasNoTrans,
@@ -308,8 +352,8 @@ RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_ou
                         1.0f,
                         prepared.kernel_slices.data() + (static_cast<std::size_t>(fx) * problem.k * slice_inner),
                         slice_inner,
-                        strip.data(),
-                        max_tile_w,
+                        lowering_matrix,
+                        lowering_leading_dim,
                         fx == 0 ? 0.0f : 1.0f,
                         tile_out.data(),
                         max_tile_w
@@ -325,8 +369,9 @@ RunResult run_dietconv_v2(const PreparedData& prepared, int threads, int tile_ou
         }
     });
 
-    const std::size_t per_thread_bytes =
-        static_cast<std::size_t>(slice_inner) * (max_tile_input_w + max_tile_w) * sizeof(float);
+    const std::size_t per_thread_bytes = can_use_direct_temp_gemm
+        ? static_cast<std::size_t>(slice_inner) * max_tile_input_w * sizeof(float)
+        : static_cast<std::size_t>(slice_inner) * (max_tile_input_w + max_tile_w) * sizeof(float);
     return {std::move(output), static_cast<std::size_t>(threads) * per_thread_bytes, resolved_tile_out_width};
 }
 

@@ -88,6 +88,38 @@ def write_csv(path: Path, rows: Iterable[dict]) -> None:
         writer.writerows(rows)
 
 
+def candidate_tile_widths(out_w: int, stride: int) -> list[int]:
+    candidates = [16, 24, 32, 48, 64, 96, 128, out_w]
+    if stride > 1:
+        candidates = [8, 16, 24, 32, 48, out_w]
+    filtered = sorted({min(width, out_w) for width in candidates if width > 0})
+    return filtered
+
+
+def autotune_v2_case(base_parameters: dict[str, str | int]) -> int:
+    out_w = ((int(base_parameters["w"]) + 2 * int(base_parameters["pad"]) - int(base_parameters["fw"])) // int(base_parameters["stride"])) + 1
+    candidates = candidate_tile_widths(out_w, int(base_parameters["stride"]))
+    trials = []
+    for width in candidates:
+        row = run_case(
+            {
+                **base_parameters,
+                "backend": "dietconv-v2",
+                "tile-out-width": width,
+                "repeat": 1,
+                "warmup": 1,
+            }
+        )
+        trials.append(row)
+    fastest_ms = min(float(row["mean_ms"]) for row in trials)
+    viable = [
+        row for row in trials
+        if float(row["mean_ms"]) <= fastest_ms * 1.05
+    ]
+    chosen = min(viable, key=lambda row: (float(row["workspace_bytes"]), int(row["tile_out_width"])))
+    return int(chosen["tile_out_width"])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build and run C++ DietConv benchmarks.")
     parser.add_argument("--repeat", type=int, default=3, help="Measured iterations per case.")
@@ -112,24 +144,25 @@ def main() -> None:
     size_rows = []
     for index, size in enumerate(SIZE_SWEEP):
         for backend in BACKENDS:
-            row = run_case(
-                {
-                    "backend": backend,
-                    "c": 32,
-                    "h": size,
-                    "w": size,
-                    "k": 64,
-                    "fh": 3,
-                    "fw": 3,
-                    "stride": 1,
-                    "pad": 1,
-                    "threads": 1,
-                    "repeat": args.repeat,
-                    "warmup": args.warmup,
-                    "seed": args.seed + index,
-                    "tile-out-width": args.tile_out_width,
-                }
-            )
+            parameters = {
+                "backend": backend,
+                "c": 32,
+                "h": size,
+                "w": size,
+                "k": 64,
+                "fh": 3,
+                "fw": 3,
+                "stride": 1,
+                "pad": 1,
+                "threads": 1,
+                "repeat": args.repeat,
+                "warmup": args.warmup,
+                "seed": args.seed + index,
+                "tile-out-width": args.tile_out_width,
+            }
+            if backend == "dietconv-v2" and args.tile_out_width == 0:
+                parameters["tile-out-width"] = autotune_v2_case(parameters)
+            row = run_case(parameters)
             row["sweep"] = "size"
             row["problem_name"] = f"scale-{size}"
             size_rows.append(row)
@@ -138,17 +171,18 @@ def main() -> None:
     for problem_index, problem in enumerate(THREAD_PROBLEMS):
         for threads in THREAD_SWEEP:
             for backend in BACKENDS:
-                row = run_case(
-                    {
-                        "backend": backend,
-                        "threads": threads,
-                        "repeat": args.repeat,
-                        "warmup": args.warmup,
-                        "seed": args.seed + 100 + problem_index,
-                        "tile-out-width": args.tile_out_width,
-                        **{key: value for key, value in problem.items() if key != "problem_name"},
-                    }
-                )
+                parameters = {
+                    "backend": backend,
+                    "threads": threads,
+                    "repeat": args.repeat,
+                    "warmup": args.warmup,
+                    "seed": args.seed + 100 + problem_index,
+                    "tile-out-width": args.tile_out_width,
+                    **{key: value for key, value in problem.items() if key != "problem_name"},
+                }
+                if backend == "dietconv-v2" and args.tile_out_width == 0:
+                    parameters["tile-out-width"] = autotune_v2_case(parameters)
+                row = run_case(parameters)
                 row["sweep"] = "threads"
                 row["problem_name"] = problem["problem_name"]
                 thread_rows.append(row)

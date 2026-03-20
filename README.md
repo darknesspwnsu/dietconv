@@ -31,13 +31,17 @@ That lines up with the poster's claim that the biggest win is memory and data du
 ## What's in the repo
 
 - `dietconv/algorithms.py`: direct, `im2col`, and DietConv-style convolution kernels in NumPy
+- `dietconv/torch_ops.py`: PyTorch `unfold` and DietConv v2 operators for CPU benchmarks
 - `scripts/run_benchmarks.py`: generates CSV and JSON benchmark summaries
 - `scripts/plot_benchmarks.py`: turns benchmark CSV output into a chart
 - `scripts/showcase_cnn.py`: runs a small 3-layer CNN forward pass with both backends
 - `cpp/dietconv_benchmark.cpp`: lower-level C++ benchmark driver using Accelerate `sgemm`
 - `scripts/run_cpp_benchmarks.py`: builds and runs size-scaling and thread-scaling C++ sweeps
 - `scripts/plot_cpp_benchmarks.py`: generates plots for the C++ sweeps
+- `scripts/run_torch_benchmarks.py`: runs CPU PyTorch benchmarks against native `conv2d`, explicit `unfold`, and DietConv v2
+- `scripts/plot_torch_benchmarks.py`: generates plots for the PyTorch sweeps
 - `tests/test_algorithms.py`: correctness checks
+- `tests/test_torch_ops.py`: PyTorch correctness checks
 
 ## Quick start
 
@@ -48,6 +52,8 @@ python3 scripts/plot_benchmarks.py
 python3 scripts/showcase_cnn.py
 python3 scripts/run_cpp_benchmarks.py --repeat 3 --warmup 1
 python3 scripts/plot_cpp_benchmarks.py
+python3 scripts/run_torch_benchmarks.py --repeat 2 --warmup 1
+python3 scripts/plot_torch_benchmarks.py
 ```
 
 Results are written to `results/`.
@@ -77,14 +83,16 @@ DietConv v1 is the direct strip-buffer interpretation of the poster: copy a full
 DietConv v2 adds one more idea:
 
 - tile the output width and only pack the input span needed for that tile
-- use an auto tile-width heuristic: `64` outputs for stride-`1` layers, `32` outputs for larger-stride layers
+- reuse the packed tile window across adjacent output rows in the lower-level C++ implementation
+- feed GEMM directly from the tiled window on stride-`1` cases instead of repacking a second strip matrix
+- autotune the output tile width during C++ and PyTorch benchmark sweeps, then choose the smallest workspace within `5%` of the fastest timing
 - keep a smaller per-thread lowering buffer so memory grows more slowly with thread count
 
 Tradeoffs:
 
 - v2 usually lowers workspace further than v1
-- v2 can be faster when the smaller tile improves cache behavior or parallel scaling
-- v2 can be slower when tiling causes too much repeated packing across the width dimension
+- v2 is now clearly faster than v1 on most of the stride-`1` size sweep in the C++ benchmark, but it can still lose on very wide cases or under some thread counts
+- v2 can still be slower when tiling causes too much repeated packing across the width dimension or when the chosen tile width is not ideal for a specific thread count
 
 ## C++ benchmark results
 
@@ -92,11 +100,12 @@ The NumPy version is useful for explaining the algorithm, but the newer C++ path
 
 Key observations from the generated C++ sweeps:
 
-- Size scaling with `C=32`, `K=64`, `3x3`, stride `1`, padding `1`: both DietConv variants stay dramatically below `im2col` in workspace at every size.
-- At `128x128`, `im2col` is `33.16 ms / 18.00 MiB`, DietConv v1 is `2.95 ms / 0.094 MiB`, and DietConv v2 is `2.75 ms / 0.048 MiB`.
-- At `160x160`, v1 is still faster than v2, but v2 keeps workspace capped at about `0.048 MiB` while v1 grows to about `0.118 MiB`.
-- On `alexnet-conv1`, v2 cuts workspace relative to v1 at every thread count and slightly edges out v1 at `8` threads: `0.743 ms` vs `0.755 ms`.
-- On the `128x128` stride-`1` thread sweep, v2 is better than v1 at `4` threads while using about half the workspace: `1.22 ms / 0.190 MiB` vs `1.54 ms / 0.378 MiB`.
+- Size scaling with `C=32`, `K=64`, `3x3`, stride `1`, padding `1`: v2 now beats v1 on `32`, `48`, `64`, `96`, and `128`, and only loses at `160`.
+- At `32x32`, v1 is `0.369 ms / 0.024 MiB` and v2 is `0.181 ms / 0.012 MiB`.
+- At `128x128`, `im2col` is `39.54 ms / 18.00 MiB`, v1 is `2.58 ms / 0.094 MiB`, and v2 is `2.41 ms / 0.048 MiB`.
+- At `160x160`, v1 is still faster than v2 (`3.19 ms` vs `3.59 ms`), but v2 keeps workspace at about `0.048 MiB` while v1 grows to about `0.118 MiB`.
+- On `alexnet-conv1`, v2 is modestly better than v1 at `1`, `2`, and `8` threads, and substantially better in workspace at `1`, `4`, and `8` threads.
+- On the `128x128` thread sweep, v2 is better than v1 at `1` and `4` threads while using about half the workspace in both cases.
 
 Generated C++ artifacts:
 
@@ -106,12 +115,36 @@ Generated C++ artifacts:
 - `results/cpp_thread_runtime.png`
 - `results/cpp_thread_workspace.png`
 
+## PyTorch op benchmark results
+
+The PyTorch path is intentionally a framework integration story, not the fastest implementation in the repo. The op in `dietconv/torch_ops.py` is a CPU tensor implementation of DietConv v2 that can be benchmarked against:
+
+- native `torch.nn.functional.conv2d`
+- explicit `torch.nn.functional.unfold` lowering plus matrix multiply
+- DietConv v2 on torch tensors
+
+Key observations from the generated PyTorch sweeps:
+
+- Native `conv2d` remains the fastest option by a wide margin. That is expected because the DietConv op is written in Python over torch tensors rather than as a compiled extension.
+- Compared with explicit `unfold`, the DietConv v2 torch op uses drastically less lowering memory on every case.
+- On the size sweep, DietConv v2 is faster than `torch-unfold` at `48x48`, `64x64`, and `96x96`, while using much less workspace.
+- For `96x96`, `torch-unfold` is `5.82 ms / 10.125 MiB` and DietConv v2 is `4.54 ms / 0.036 MiB`.
+- On `alexnet-conv1`, the Python torch op is not competitive yet, which is a good argument for a future compiled PyTorch extension rather than more Python-level tuning.
+
+Generated PyTorch artifacts:
+
+- `results/torch_size_scaling.csv`
+- `results/torch_thread_scaling.csv`
+- `results/torch_size_scaling.png`
+- `results/torch_thread_runtime.png`
+
 ## Notes on fidelity
 
 This is a benchmark-and-explanation repository, not a production kernel:
 
 - the implementation is CPU-only and uses NumPy BLAS
 - the lower-level benchmark path is C++ plus Apple's Accelerate BLAS on macOS
+- the PyTorch path is a CPU-only framework integration demo, not a compiled extension
 - the direct kernel is for correctness, not performance
 - the DietConv kernel mirrors the strip-buffer structure from the poster
 - DietConv v2 is a practical enhancement, not something claimed in the original poster
@@ -120,9 +153,10 @@ This is a benchmark-and-explanation repository, not a production kernel:
 
 ## Next steps
 
-- Move the DietConv kernel into a lower-level implementation, either as a C++ microbenchmark or a PyTorch custom op, so runtime comparisons reflect the algorithm instead of mostly reflecting NumPy overhead.
-- Add thread-scaling experiments to mirror the poster more closely, including outer-loop parallelism and a comparison against a strong BLAS-backed `im2col` baseline across `1`, `2`, `4`, and `8` threads.
+- Turn the torch DietConv op into a compiled PyTorch extension so the framework-level benchmark story is not dominated by Python loop overhead.
+- Improve v2 autotuning so tile width adapts to thread count and problem shape more reliably; the `128x128` and `160x160` results show there is still room to choose better shapes.
+- Add thread-scaling experiments that separate arithmetic time from packing time, so it is clearer when v2 wins because of cache reuse versus because of reduced memory traffic.
 - Expand the benchmark suite with more CNN-relevant layer shapes from AlexNet, VGG, ResNet, and MobileNet to show where strip-buffer convolution helps most and where large monolithic GEMMs still dominate.
 - Separate theoretical workspace from measured process memory so the repository can report both the structural duplication reduction and the real end-to-end peak RSS seen during runs.
-- Add a PyTorch inference showcase that swaps a few convolution layers between `im2col`-style lowering and DietConv-style strip buffering while preserving numerics, so the repo demonstrates the idea inside a recognizable model.
+- Add a PyTorch inference showcase that swaps a few convolution layers between `unfold`-style lowering and DietConv-style strip buffering while preserving numerics, so the repo demonstrates the idea inside a recognizable model.
 - Document the exact correspondence between the poster pseudocode and the implementation, including filter reordering, temporary-buffer layout, and how stride affects the copied strip.
