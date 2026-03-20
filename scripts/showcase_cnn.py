@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 import sys
+import subprocess
 
 import numpy as np
 
@@ -86,6 +87,7 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
     print(f"Wrote showcase summary to {args.output}")
 
 

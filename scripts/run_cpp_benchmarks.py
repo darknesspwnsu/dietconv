@@ -197,6 +197,7 @@ def main() -> None:
     }
     with (args.results_dir / "cpp_benchmark_summary.json").open("w") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
 
     print(f"Wrote C++ benchmark results to {args.results_dir}")
 

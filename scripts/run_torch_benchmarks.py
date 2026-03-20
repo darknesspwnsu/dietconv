@@ -5,6 +5,7 @@ import csv
 import json
 import time
 from pathlib import Path
+import subprocess
 
 import torch
 import torch.nn.functional as F
@@ -255,6 +256,7 @@ def main() -> None:
             indent=2,
             sort_keys=True,
         )
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
     print(f"Wrote torch benchmark results to {args.results_dir}")
 
 

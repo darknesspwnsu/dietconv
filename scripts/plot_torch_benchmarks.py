@@ -4,6 +4,8 @@ import argparse
 import csv
 from collections import defaultdict
 from pathlib import Path
+import subprocess
+import sys
 
 import matplotlib.pyplot as plt
 
@@ -90,6 +92,7 @@ def main() -> None:
     thread_rows = read_rows(args.results_dir / "torch_thread_scaling.csv")
     plot_size(size_rows, args.results_dir)
     plot_threads(thread_rows, args.results_dir)
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
     print(f"Wrote torch benchmark plots to {args.results_dir}")
 
 

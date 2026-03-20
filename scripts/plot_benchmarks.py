@@ -4,8 +4,12 @@ import argparse
 import csv
 from collections import defaultdict
 from pathlib import Path
+import subprocess
+import sys
 
 import matplotlib.pyplot as plt
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_rows(path: Path):
@@ -62,6 +66,7 @@ def main() -> None:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.output, dpi=160)
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
     print(f"Wrote plot to {args.output}")
 
 

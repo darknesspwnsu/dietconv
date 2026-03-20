@@ -4,6 +4,8 @@ import argparse
 import csv
 from collections import defaultdict
 from pathlib import Path
+import subprocess
+import sys
 
 import matplotlib.pyplot as plt
 
@@ -109,6 +111,7 @@ def main() -> None:
     thread_rows = read_rows(args.results_dir / "cpp_thread_scaling.csv")
     plot_size_scaling(size_rows, args.results_dir)
     plot_thread_scaling(thread_rows, args.results_dir)
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
     print(f"Wrote C++ benchmark plots to {args.results_dir}")
 
 

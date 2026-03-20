@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -27,6 +28,7 @@ def main() -> None:
     rows = benchmark_suite(repeat=args.repeat, warmup=args.warmup, seed=args.seed)
     save_rows_csv(rows, args.results_dir / "benchmark_results.csv")
     save_summary_json(rows, args.results_dir / "benchmark_summary.json")
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
 
     print(f"Wrote {len(rows)} benchmark rows to {args.results_dir}")
 
