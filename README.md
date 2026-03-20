@@ -34,6 +34,9 @@ That lines up with the poster's claim that the biggest win is memory and data du
 - `scripts/run_benchmarks.py`: generates CSV and JSON benchmark summaries
 - `scripts/plot_benchmarks.py`: turns benchmark CSV output into a chart
 - `scripts/showcase_cnn.py`: runs a small 3-layer CNN forward pass with both backends
+- `cpp/dietconv_benchmark.cpp`: lower-level C++ benchmark driver using Accelerate `sgemm`
+- `scripts/run_cpp_benchmarks.py`: builds and runs size-scaling and thread-scaling C++ sweeps
+- `scripts/plot_cpp_benchmarks.py`: generates plots for the C++ sweeps
 - `tests/test_algorithms.py`: correctness checks
 
 ## Quick start
@@ -43,6 +46,8 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/run_benchmarks.py --repeat 5 --warmup 1
 python3 scripts/plot_benchmarks.py
 python3 scripts/showcase_cnn.py
+python3 scripts/run_cpp_benchmarks.py --repeat 3 --warmup 1
+python3 scripts/plot_cpp_benchmarks.py
 ```
 
 Results are written to `results/`.
@@ -65,13 +70,51 @@ For the lightweight 3-layer CNN showcase:
 - workspace reduction: `90.35x`
 - final output checksum difference: `0.0`
 
+## DietConv v2
+
+DietConv v1 is the direct strip-buffer interpretation of the poster: copy a full `Fh x Win` input strip for each output row, then run one GEMM per kernel column.
+
+DietConv v2 adds one more idea:
+
+- tile the output width and only pack the input span needed for that tile
+- use an auto tile-width heuristic: `64` outputs for stride-`1` layers, `32` outputs for larger-stride layers
+- keep a smaller per-thread lowering buffer so memory grows more slowly with thread count
+
+Tradeoffs:
+
+- v2 usually lowers workspace further than v1
+- v2 can be faster when the smaller tile improves cache behavior or parallel scaling
+- v2 can be slower when tiling causes too much repeated packing across the width dimension
+
+## C++ benchmark results
+
+The NumPy version is useful for explaining the algorithm, but the newer C++ path is the more meaningful performance view because it removes most Python overhead and uses Accelerate `sgemm` for the matrix multiplies.
+
+Key observations from the generated C++ sweeps:
+
+- Size scaling with `C=32`, `K=64`, `3x3`, stride `1`, padding `1`: both DietConv variants stay dramatically below `im2col` in workspace at every size.
+- At `128x128`, `im2col` is `33.16 ms / 18.00 MiB`, DietConv v1 is `2.95 ms / 0.094 MiB`, and DietConv v2 is `2.75 ms / 0.048 MiB`.
+- At `160x160`, v1 is still faster than v2, but v2 keeps workspace capped at about `0.048 MiB` while v1 grows to about `0.118 MiB`.
+- On `alexnet-conv1`, v2 cuts workspace relative to v1 at every thread count and slightly edges out v1 at `8` threads: `0.743 ms` vs `0.755 ms`.
+- On the `128x128` stride-`1` thread sweep, v2 is better than v1 at `4` threads while using about half the workspace: `1.22 ms / 0.190 MiB` vs `1.54 ms / 0.378 MiB`.
+
+Generated C++ artifacts:
+
+- `results/cpp_size_scaling.csv`
+- `results/cpp_thread_scaling.csv`
+- `results/cpp_size_scaling.png`
+- `results/cpp_thread_runtime.png`
+- `results/cpp_thread_workspace.png`
+
 ## Notes on fidelity
 
 This is a benchmark-and-explanation repository, not a production kernel:
 
 - the implementation is CPU-only and uses NumPy BLAS
+- the lower-level benchmark path is C++ plus Apple's Accelerate BLAS on macOS
 - the direct kernel is for correctness, not performance
 - the DietConv kernel mirrors the strip-buffer structure from the poster
+- DietConv v2 is a practical enhancement, not something claimed in the original poster
 - the memory advantage is structural and shows up consistently; the runtime advantage depends on the problem shape and how well NumPy's BLAS path handles one large GEMM versus several smaller ones
 - for stride greater than `1`, the NumPy implementation still makes a compact contiguous slice per GEMM so `@` can consume it efficiently
 

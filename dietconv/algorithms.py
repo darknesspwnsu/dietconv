@@ -12,6 +12,13 @@ def _pair(value: int | Tuple[int, int]) -> Tuple[int, int]:
     return (value, value)
 
 
+def _resolve_tile_out_width(out_w: int, stride: int, tile_out_width: int) -> int:
+    if tile_out_width > 0:
+        return min(tile_out_width, out_w)
+    heuristic = 64 if stride == 1 else 32
+    return min(heuristic, out_w)
+
+
 @dataclass(frozen=True)
 class Conv2DProblem:
     name: str
@@ -84,6 +91,23 @@ def workspace_bytes_dietconv(
     channels, _, width = padded.shape
     kernel_height = weight.shape[2]
     return int(x.dtype.itemsize * channels * kernel_height * width)
+
+
+def workspace_bytes_dietconv_v2(
+    x: np.ndarray,
+    weight: np.ndarray,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+    tile_out_width: int = 32,
+) -> int:
+    padded = pad_input(x, padding)
+    channels, _, padded_width = padded.shape
+    kernel_height = weight.shape[2]
+    kernel_width = weight.shape[3]
+    out_w = (padded_width - kernel_width) // stride + 1
+    tile_w = _resolve_tile_out_width(out_w, stride, tile_out_width)
+    tile_input_width = tile_w * stride + kernel_width - 1
+    return int(x.dtype.itemsize * channels * kernel_height * tile_input_width)
 
 
 def im2col_matrix(
@@ -162,6 +186,59 @@ def conv2d_dietconv(
                 out_w,
             )
             output[:, out_y, :] += kernel_slices[kernel_x] @ strip_matrix
+
+    if bias is not None:
+        output += bias[:, None, None]
+    return output
+
+
+def conv2d_dietconv_v2(
+    x: np.ndarray,
+    weight: np.ndarray,
+    bias: np.ndarray | None = None,
+    stride: int = 1,
+    padding: int | Tuple[int, int] = 0,
+    tile_out_width: int = 0,
+) -> np.ndarray:
+    padded = pad_input(x, padding)
+    channels, _, padded_width = padded.shape
+    out_channels, weight_channels, kernel_height, kernel_width = weight.shape
+    if channels != weight_channels:
+        raise ValueError("Input channel count and weight channel count must match.")
+
+    out_h = (padded.shape[1] - kernel_height) // stride + 1
+    out_w = (padded_width - kernel_width) // stride + 1
+    tile_out_width = _resolve_tile_out_width(out_w, stride, tile_out_width)
+    output = np.zeros((out_channels, out_h, out_w), dtype=x.dtype)
+
+    kernel_slices = np.ascontiguousarray(weight.transpose(3, 0, 1, 2)).reshape(
+        kernel_width,
+        out_channels,
+        channels * kernel_height,
+    )
+
+    for out_y in range(out_h):
+        row_start = out_y * stride
+        for tile_start in range(0, out_w, tile_out_width):
+            tile_w = min(tile_out_width, out_w - tile_start)
+            input_col = tile_start * stride
+            tile_input_width = tile_w * stride + kernel_width - 1
+            temp = np.ascontiguousarray(
+                padded[
+                    :,
+                    row_start : row_start + kernel_height,
+                    input_col : input_col + tile_input_width,
+                ]
+            )
+            for kernel_x in range(kernel_width):
+                strip = temp[:, :, kernel_x : kernel_x + stride * tile_w : stride]
+                strip_matrix = np.ascontiguousarray(strip).reshape(
+                    channels * kernel_height,
+                    tile_w,
+                )
+                output[:, out_y, tile_start : tile_start + tile_w] += (
+                    kernel_slices[kernel_x] @ strip_matrix
+                )
 
     if bias is not None:
         output += bias[:, None, None]

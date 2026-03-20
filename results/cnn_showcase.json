@@ -9,7 +9,7 @@
       32
     ],
     "peak_workspace_mib": 0.012451171875,
-    "total_ms": 2.2436669999999492
+    "total_ms": 2.343001000000011
   },
   "im2col": {
     "backend": "im2col",
@@ -20,7 +20,7 @@
       32
     ],
     "peak_workspace_mib": 1.125,
-    "total_ms": 116.31429100000003
+    "total_ms": 21.750291000000008
   },
   "workspace_ratio_im2col_over_dietconv": 90.3529411764706
 }

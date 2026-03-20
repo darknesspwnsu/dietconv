@@ -2,7 +2,12 @@ import unittest
 
 import numpy as np
 
-from dietconv.algorithms import conv2d_dietconv, conv2d_direct, conv2d_im2col
+from dietconv.algorithms import (
+    conv2d_dietconv,
+    conv2d_dietconv_v2,
+    conv2d_direct,
+    conv2d_im2col,
+)
 
 
 class ConvAlgorithmTests(unittest.TestCase):
@@ -23,6 +28,16 @@ class ConvAlgorithmTests(unittest.TestCase):
 
     def test_dietconv_matches_im2col_with_stride(self) -> None:
         actual = conv2d_dietconv(self.x, self.weight, stride=2, padding=1)
+        expected = conv2d_im2col(self.x, self.weight, stride=2, padding=1)
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+
+    def test_dietconv_v2_matches_direct(self) -> None:
+        direct = conv2d_direct(self.x, self.weight, stride=1, padding=1)
+        actual = conv2d_dietconv_v2(self.x, self.weight, stride=1, padding=1, tile_out_width=4)
+        np.testing.assert_allclose(actual, direct, rtol=1e-5, atol=1e-5)
+
+    def test_dietconv_v2_matches_im2col_with_stride(self) -> None:
+        actual = conv2d_dietconv_v2(self.x, self.weight, stride=2, padding=1, tile_out_width=3)
         expected = conv2d_im2col(self.x, self.weight, stride=2, padding=1)
         np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
 
