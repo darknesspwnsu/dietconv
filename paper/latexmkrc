@@ -1,0 +1,4 @@
+$pdf_mode = 1;
+$bibtex = 'bibtex %O %B';
+$out_dir = '.';
+$aux_dir = '.';

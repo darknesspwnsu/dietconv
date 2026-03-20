@@ -1,5 +1,5 @@
 all:
-	@echo "Install a LaTeX distribution and run: pdflatex main.tex"
+	./build.sh
 
 figures:
 	python3 ../scripts/generate_paper_assets.py
