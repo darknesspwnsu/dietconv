@@ -75,6 +75,16 @@ class TorchOpTests(unittest.TestCase):
         torch.testing.assert_close(actual_v1, expected, rtol=1e-5, atol=1e-5)
         torch.testing.assert_close(actual_v2, expected, rtol=1e-5, atol=1e-5)
 
+    def test_compiled_variants_match_batch_anchor_case(self) -> None:
+        x = torch.randn(4, 32, 64, 64)
+        weight = torch.randn(64, 32, 3, 3)
+        bias = torch.randn(64)
+        expected = F.conv2d(x, weight, bias=bias, stride=1, padding=1)
+        actual_v1 = dietconv2d_v1_compiled(x, weight, bias=bias, stride=1, padding=1)
+        actual_v2 = dietconv2d_v2_compiled(x, weight, bias=bias, stride=1, padding=1, tile_out_width=32)
+        torch.testing.assert_close(actual_v1, expected, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(actual_v2, expected, rtol=1e-4, atol=1e-4)
+
     def test_compiled_v2_matches_python_v2(self) -> None:
         expected = dietconv2d_v2(self.x, self.weight, stride=1, padding=1, tile_out_width=4)
         actual = dietconv2d_v2_compiled(self.x, self.weight, stride=1, padding=1, tile_out_width=4)

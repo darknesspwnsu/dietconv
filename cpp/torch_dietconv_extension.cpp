@@ -78,16 +78,16 @@ torch::Tensor make_padded_input(const torch::Tensor& input, int64_t padding) {
     return padded;
 }
 
-torch::Tensor add_bias_if_present(const torch::Tensor& output, const c10::optional<torch::Tensor>& bias) {
+torch::Tensor normalize_bias(const c10::optional<torch::Tensor>& bias, int64_t out_channels) {
     if (!bias.has_value()) {
-        return output;
+        return torch::Tensor();
     }
-    auto bias_tensor = bias.value();
+    auto bias_tensor = bias.value().contiguous();
     TORCH_CHECK(bias_tensor.device().is_cpu(), "Bias must be on CPU.");
     TORCH_CHECK(bias_tensor.scalar_type() == at::kFloat, "Bias must be float32.");
     TORCH_CHECK(bias_tensor.dim() == 1, "Bias must have shape (K,).");
-    TORCH_CHECK(bias_tensor.size(0) == output.size(1), "Bias output channels must match output.");
-    return output + bias_tensor.view({1, -1, 1, 1});
+    TORCH_CHECK(bias_tensor.size(0) == out_channels, "Bias output channels must match output.");
+    return bias_tensor;
 }
 
 torch::Tensor prepack_weight(torch::Tensor weight) {
@@ -165,6 +165,8 @@ torch::Tensor dietconv_v1_prepacked_forward(
     const int64_t out_w = (padded_width - kernel_width) / stride + 1;
 
     auto output = torch::zeros({batch_size, out_channels, out_h, out_w}, x.options());
+    auto bias_tensor = normalize_bias(bias, out_channels);
+    const float* bias_ptr = bias_tensor.defined() ? bias_tensor.data_ptr<float>() : nullptr;
 
     const float* padded_ptr = padded.data_ptr<float>();
     const float* packed_ptr = packed.data_ptr<float>();
@@ -180,7 +182,6 @@ torch::Tensor dietconv_v1_prepacked_forward(
         std::vector<float> temp(static_cast<std::size_t>(slice_inner) * padded_width, 0.0f);
         std::vector<float> row_out(static_cast<std::size_t>(out_channels) * out_w, 0.0f);
         std::vector<float> strip(static_cast<std::size_t>(slice_inner) * out_w, 0.0f);
-
         for (int64_t index = begin; index < end; ++index) {
             const int64_t batch = index / out_h;
             const int64_t out_y = index % out_h;
@@ -245,16 +246,20 @@ torch::Tensor dietconv_v1_prepacked_forward(
 
             for (int64_t out_channel = 0; out_channel < out_channels; ++out_channel) {
                 float* dst = batch_output + ((out_channel * out_h + out_y) * out_w);
-                std::memcpy(
-                    dst,
-                    row_out.data() + static_cast<std::size_t>(out_channel) * out_w,
-                    static_cast<std::size_t>(out_w) * sizeof(float)
-                );
+                const float* src = row_out.data() + static_cast<std::size_t>(out_channel) * out_w;
+                if (bias_ptr == nullptr) {
+                    std::memcpy(dst, src, static_cast<std::size_t>(out_w) * sizeof(float));
+                } else {
+                    const float bias_value = bias_ptr[out_channel];
+                    for (int64_t out_x = 0; out_x < out_w; ++out_x) {
+                        dst[out_x] = src[out_x] + bias_value;
+                    }
+                }
             }
         }
     });
 
-    return add_bias_if_present(output, bias);
+    return output;
 }
 
 torch::Tensor dietconv_v2_prepacked_forward(
@@ -298,6 +303,8 @@ torch::Tensor dietconv_v2_prepacked_forward(
     const int64_t max_tile_input_width = (resolved_tile_out_width - 1) * stride + kernel_width;
 
     auto output = torch::zeros({batch_size, out_channels, out_h, out_w}, x.options());
+    auto bias_tensor = normalize_bias(bias, out_channels);
+    const float* bias_ptr = bias_tensor.defined() ? bias_tensor.data_ptr<float>() : nullptr;
 
     const float* padded_ptr = padded.data_ptr<float>();
     const float* packed_ptr = packed.data_ptr<float>();
@@ -306,7 +313,6 @@ torch::Tensor dietconv_v2_prepacked_forward(
     const int64_t padded_batch_stride = channels * padded_height * padded_width;
     const int64_t output_batch_stride = out_channels * out_h * out_w;
     const bool stride_one = stride == 1;
-
     at::parallel_for(0, batch_size * out_h, 1, [&](int64_t begin, int64_t end) {
         // temp:    [slice_inner, max_tile_input_width]
         // tile_out:[out_channels, resolved_tile_out_width]
@@ -384,17 +390,21 @@ torch::Tensor dietconv_v2_prepacked_forward(
 
                 for (int64_t out_channel = 0; out_channel < out_channels; ++out_channel) {
                     float* dst = batch_output + ((out_channel * out_h + out_y) * out_w) + tile_start;
-                    std::memcpy(
-                        dst,
-                        tile_out.data() + static_cast<std::size_t>(out_channel) * resolved_tile_out_width,
-                        static_cast<std::size_t>(tile_width) * sizeof(float)
-                    );
+                    const float* src = tile_out.data() + static_cast<std::size_t>(out_channel) * resolved_tile_out_width;
+                    if (bias_ptr == nullptr) {
+                        std::memcpy(dst, src, static_cast<std::size_t>(tile_width) * sizeof(float));
+                    } else {
+                        const float bias_value = bias_ptr[out_channel];
+                        for (int64_t out_x = 0; out_x < tile_width; ++out_x) {
+                            dst[out_x] = src[out_x] + bias_value;
+                        }
+                    }
                 }
             }
         }
     });
 
-    return add_bias_if_present(output, bias);
+    return output;
 }
 
 }  // namespace

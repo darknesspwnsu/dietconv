@@ -57,6 +57,20 @@ THREAD_PROBLEMS = [
         "pad": 1,
     },
 ]
+BATCH_ANCHOR_PROBLEMS = [
+    {
+        "problem_name": "batch-4-3x3",
+        "batch": 4,
+        "c": 32,
+        "h": 64,
+        "w": 64,
+        "k": 64,
+        "fh": 3,
+        "fw": 3,
+        "stride": 1,
+        "pad": 1,
+    },
+]
 NUMERIC_TOLERANCE = 1e-4
 
 
@@ -64,7 +78,12 @@ def make_inputs(problem: dict, seed: int) -> tuple[torch.Tensor, torch.Tensor]:
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
     x = torch.randn(
-        (1, problem["c"], problem["h"], problem["w"]),
+        (
+            problem.get("batch", 1),
+            problem["c"],
+            problem["h"],
+            problem["w"],
+        ),
         generator=generator,
         dtype=torch.float32,
     )
@@ -173,6 +192,16 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--seed", type=int, default=29)
     parser.add_argument("--results-dir", type=Path, default=ROOT / "results")
+    parser.add_argument(
+        "--skip-readme-update",
+        action="store_true",
+        help="Do not refresh README.md after writing benchmark results.",
+    )
+    parser.add_argument(
+        "--batch-anchor",
+        action="store_true",
+        help="Run an additional batch>1 anchor benchmark and write a separate CSV.",
+    )
     args = parser.parse_args()
 
     load_dietconv_extension()
@@ -211,22 +240,39 @@ def main() -> None:
                 row["sweep"] = "threads"
                 thread_rows.append(row)
 
+    batch_anchor_rows = []
+    if args.batch_anchor:
+        for index, problem in enumerate(BATCH_ANCHOR_PROBLEMS):
+            for backend in ["torch-native", "torch-unfold", "dietconv-v1-compiled", "dietconv-v2-compiled"]:
+                row = run_problem(
+                    problem,
+                    backend,
+                    threads=1,
+                    seed=args.seed + 200 + index,
+                    repeat=args.repeat,
+                    warmup=args.warmup,
+                )
+                row["problem_name"] = problem["problem_name"]
+                row["sweep"] = "batch-anchor"
+                batch_anchor_rows.append(row)
+
     write_csv(args.results_dir / "torch_size_scaling.csv", size_rows)
     write_csv(args.results_dir / "torch_thread_scaling.csv", thread_rows)
+    if batch_anchor_rows:
+        write_csv(args.results_dir / "torch_batch_anchor.csv", batch_anchor_rows)
+    summary = {
+        "size_scaling_cases": len(size_rows),
+        "thread_scaling_cases": len(thread_rows),
+        "torch_version": torch.__version__,
+        "compiled_extension": True,
+        "numeric_tolerance": NUMERIC_TOLERANCE,
+    }
+    if batch_anchor_rows:
+        summary["batch_anchor_cases"] = len(batch_anchor_rows)
     with (args.results_dir / "torch_benchmark_summary.json").open("w") as handle:
-        json.dump(
-            {
-                "size_scaling_cases": len(size_rows),
-                "thread_scaling_cases": len(thread_rows),
-                "torch_version": torch.__version__,
-                "compiled_extension": True,
-                "numeric_tolerance": NUMERIC_TOLERANCE,
-            },
-            handle,
-            indent=2,
-            sort_keys=True,
-        )
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
+        json.dump(summary, handle, indent=2, sort_keys=True)
+    if not args.skip_readme_update:
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "update_readme_benchmarks.py")], check=True, cwd=ROOT)
     print(f"Wrote torch benchmark results to {args.results_dir}")
 
 

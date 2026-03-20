@@ -156,40 +156,40 @@ This is the simple reference showcase: easy to inspect, not the most meaningful 
 
 ### PyTorch benchmark digest
 
-- On the 1-thread size sweep, compiled `v2` beats compiled `v1` on `3` of `4` tested sizes.
+- On the 1-thread size sweep, compiled `v2` beats compiled `v1` on `1` of `4` tested sizes.
 - Compiled `v2` beats explicit `torch-unfold` on `4` of `4` tested sizes.
 - The torch digest is the practical framework story: native `conv2d`, explicit `unfold`, and compiled DietConv side by side.
 
 | Input size | Fastest | native ms | unfold ms | v1 ms | v2 ms | v2 vs v1 | v2 MiB |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 32 | native | 0.11 | 0.59 | 0.16 | 0.15 | 1.1x | 0.012 |
-| 48 | native | 0.37 | 1.28 | 0.41 | 0.42 | 1.0x | 0.018 |
-| 64 | v2 | 1.55 | 2.54 | 1.12 | 0.81 | 1.4x | 0.024 |
-| 96 | v2 | 1.63 | 8.93 | 1.82 | 1.41 | 1.3x | 0.024 |
+| 32 | v2 | 0.36 | 1.13 | 0.35 | 0.30 | 1.2x | 0.012 |
+| 48 | native | 0.62 | 2.04 | 0.64 | 0.85 | 0.8x | 0.012 |
+| 64 | v1 | 1.36 | 4.65 | 1.06 | 1.22 | 0.9x | 0.024 |
+| 96 | v1 | 3.25 | 10.45 | 3.14 | 3.24 | 1.0x | 0.036 |
 
 - Numeric guardrail: current worst torch max-abs diff vs native `conv2d` is `9.53674e-05`.
 
 **Thread sweep: `alexnet-conv1`**
 
+- Compiled `v2` beats compiled `v1` on `3` of `4` tested thread counts.
+
+| Threads | Fastest | native ms | unfold ms | v1 ms | v2 ms |
+| --- | --- | --- | --- | --- | --- |
+| 1 | native | 3.60 | 4.53 | 4.29 | 3.99 |
+| 2 | native | 1.99 | 3.05 | 3.68 | 3.92 |
+| 4 | native | 1.70 | 1.92 | 4.42 | 4.40 |
+| 8 | native | 1.57 | 1.86 | 4.27 | 3.92 |
+
+**Thread sweep: `scale-96`**
+
 - Compiled `v2` beats compiled `v1` on `1` of `4` tested thread counts.
 
 | Threads | Fastest | native ms | unfold ms | v1 ms | v2 ms |
 | --- | --- | --- | --- | --- | --- |
-| 1 | unfold | 2.15 | 1.67 | 1.87 | 1.94 |
-| 2 | native | 1.00 | 1.54 | 1.81 | 1.94 |
-| 4 | native | 0.82 | 1.02 | 1.95 | 1.90 |
-| 8 | unfold | 1.33 | 0.81 | 1.94 | 1.98 |
-
-**Thread sweep: `scale-96`**
-
-- Compiled `v2` beats compiled `v1` on `0` of `4` tested thread counts.
-
-| Threads | Fastest | native ms | unfold ms | v1 ms | v2 ms |
-| --- | --- | --- | --- | --- | --- |
-| 1 | v1 | 1.15 | 4.24 | 1.14 | 1.52 |
-| 2 | v1 | 1.24 | 3.36 | 1.18 | 1.25 |
-| 4 | native | 0.99 | 3.58 | 1.42 | 1.43 |
-| 8 | native | 1.15 | 2.71 | 1.47 | 1.48 |
+| 1 | native | 2.24 | 9.33 | 2.30 | 2.33 |
+| 2 | native | 2.21 | 6.27 | 2.74 | 2.84 |
+| 4 | v1 | 3.11 | 4.85 | 2.73 | 3.70 |
+| 8 | native | 2.68 | 4.52 | 3.14 | 2.93 |
 
 ![PyTorch size scaling](results/torch_size_scaling.png)
 
@@ -203,28 +203,28 @@ This is the simple reference showcase: easy to inspect, not the most meaningful 
 
 | Input size | native RSS delta | unfold RSS delta | v1 RSS delta | v2 RSS delta | Lowest delta |
 | --- | --- | --- | --- | --- | --- |
-| 32 | 2.250 | 3.062 | 0.688 | 1.266 | v1 |
-| 48 | 5.141 | 8.828 | 3.391 | 1.484 | v2 |
-| 64 | 15.344 | 15.219 | 3.719 | 2.875 | v2 |
-| 96 | 9.344 | 13.547 | 13.109 | 9.328 | v2 |
+| 32 | 1.344 | 2.875 | 1.328 | 0.641 | v2 |
+| 48 | 8.844 | 8.531 | 3.234 | 0.359 | v2 |
+| 64 | 8.844 | 12.219 | 1.703 | 3.328 | v1 |
+| 96 | 16.094 | 20.391 | 18.859 | 7.078 | v2 |
 
 **Memory thread sweep: `alexnet-conv1`**
 
 | Threads | native RSS delta | unfold RSS delta | v1 RSS delta | v2 RSS delta | Lowest delta |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 7.875 | 16.750 | 7.141 | 2.562 | v2 |
-| 2 | 13.172 | 15.750 | 4.859 | 1.438 | v2 |
-| 4 | 15.391 | 10.375 | 3.797 | 0.328 | v2 |
-| 8 | 13.172 | 12.906 | 3.812 | 1.438 | v2 |
+| 1 | 15.469 | 14.031 | 6.000 | 1.453 | v2 |
+| 2 | 14.312 | 14.047 | 3.812 | 3.672 | v2 |
+| 4 | 13.172 | 13.094 | 2.703 | 1.438 | v2 |
+| 8 | 16.500 | 23.281 | 6.047 | 0.328 | v2 |
 
 **Memory thread sweep: `scale-96`**
 
 | Threads | native RSS delta | unfold RSS delta | v1 RSS delta | v2 RSS delta | Lowest delta |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 11.609 | 13.594 | 14.328 | 6.047 | v2 |
-| 2 | 13.828 | 14.641 | 11.938 | 2.578 | v2 |
-| 4 | 11.578 | 14.703 | 14.266 | 4.828 | v2 |
-| 8 | 11.578 | 13.516 | 15.312 | 3.812 | v2 |
+| 1 | 13.859 | 13.609 | 18.812 | 10.516 | v2 |
+| 2 | 13.828 | 18.016 | 17.625 | 4.828 | v2 |
+| 4 | 13.828 | 22.938 | 20.953 | 9.375 | v2 |
+| 8 | 13.969 | 18.062 | 15.344 | 7.141 | v2 |
 
 ![PyTorch memory size scaling](results/torch_memory_size_scaling.png)
 
@@ -248,10 +248,7 @@ This is a benchmark-and-explanation repository, not a production kernel:
 
 ## Next steps
 
-- Improve the compiled torch extension so it scales better with thread count on AlexNet-style large-kernel layers and batch sizes greater than `1`.
-- Improve v2 autotuning so tile width adapts to thread count and problem shape more reliably; the current torch and C++ results still show cases where v2 leaves performance on the table.
 - Add thread-scaling experiments that separate arithmetic time from packing time, so it is clearer when v2 wins because of cache reuse versus because of reduced memory traffic.
 - Expand the benchmark suite with more CNN-relevant layer shapes from AlexNet, VGG, ResNet, and MobileNet to show where strip-buffer convolution helps most and where large monolithic GEMMs still dominate.
 - Add allocator-aware memory instrumentation alongside the current isolated-process RSS sampling, so the repository can report both practical process-memory deltas and framework-internal memory behavior.
 - Add a PyTorch inference showcase that swaps a few convolution layers between native `conv2d`, `unfold`-style lowering, and DietConv-style strip buffering while preserving numerics, so the repo demonstrates the idea inside a recognizable model.
-- Add a concise implementation note that maps the poster pseudocode directly onto the compiled `v1` and `v2` kernels, with diagrams for filter packing and temporary-buffer layout.
