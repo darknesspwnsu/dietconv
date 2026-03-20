@@ -1,0 +1,42 @@
+{
+  "alexnet-conv1": {
+    "dietconv_max_abs_diff": 4.57763671875e-05,
+    "dietconv_mean_ms": 15.59316666666666,
+    "dietconv_workspace_mib": 0.028575897216796875,
+    "im2col_max_abs_diff": 0.0,
+    "im2col_mean_ms": 80.75569433333334,
+    "im2col_workspace_mib": 4.188823699951172,
+    "speed_ratio_im2col_over_dietconv": 5.178915614745778,
+    "workspace_ratio_im2col_over_dietconv": 146.58590308370043
+  },
+  "feature-32": {
+    "dietconv_max_abs_diff": 5.340576171875e-05,
+    "dietconv_mean_ms": 44.593763666666746,
+    "dietconv_workspace_mib": 0.021240234375,
+    "im2col_max_abs_diff": 0.0,
+    "im2col_mean_ms": 23.400028000000002,
+    "im2col_workspace_mib": 3.4453125,
+    "speed_ratio_im2col_over_dietconv": 0.5247376780061114,
+    "workspace_ratio_im2col_over_dietconv": 162.20689655172413
+  },
+  "feature-64": {
+    "dietconv_max_abs_diff": 6.103515625e-05,
+    "dietconv_mean_ms": 10.386110666666651,
+    "dietconv_workspace_mib": 0.02197265625,
+    "im2col_max_abs_diff": 0.0,
+    "im2col_mean_ms": 2.4092499999999184,
+    "im2col_workspace_mib": 1.72265625,
+    "speed_ratio_im2col_over_dietconv": 0.23196845068599198,
+    "workspace_ratio_im2col_over_dietconv": 78.4
+  },
+  "stem-64": {
+    "dietconv_max_abs_diff": 2.6702880859375e-05,
+    "dietconv_mean_ms": 1.7351803333333082,
+    "dietconv_workspace_mib": 0.00560760498046875,
+    "im2col_max_abs_diff": 0.0,
+    "im2col_mean_ms": 13.547041666666649,
+    "im2col_workspace_mib": 0.57421875,
+    "speed_ratio_im2col_over_dietconv": 7.807281702324607,
+    "workspace_ratio_im2col_over_dietconv": 102.4
+  }
+}

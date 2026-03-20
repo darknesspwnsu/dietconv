@@ -1,0 +1,26 @@
+{
+  "checksum_abs_diff": 0.0,
+  "dietconv": {
+    "backend": "dietconv",
+    "final_output_checksum": 13470898.0,
+    "final_output_shape": [
+      32,
+      32,
+      32
+    ],
+    "peak_workspace_mib": 0.012451171875,
+    "total_ms": 2.2436669999999492
+  },
+  "im2col": {
+    "backend": "im2col",
+    "final_output_checksum": 13470898.0,
+    "final_output_shape": [
+      32,
+      32,
+      32
+    ],
+    "peak_workspace_mib": 1.125,
+    "total_ms": 116.31429100000003
+  },
+  "workspace_ratio_im2col_over_dietconv": 90.3529411764706
+}
