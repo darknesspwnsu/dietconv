@@ -155,9 +155,22 @@ def plot_v2_ablation() -> None:
         problem_rows.sort(key=lambda row: int(row["tile_out_width"]))
         xs = [int(row["tile_out_width"]) for row in problem_rows]
         ys = [float(row["mean_ms"]) for row in problem_rows]
-        colors = ["#c0392b" if row["mode"] == "autotuned" else "#2d4f8b" for row in problem_rows]
-        axis.scatter(xs, ys, c=colors, s=35)
+        axis.scatter(xs, ys, c="#2d4f8b", s=35, zorder=2)
         axis.plot(xs, ys, color="#2d4f8b", linewidth=1.5, alpha=0.8)
+        autotuned_rows = [row for row in problem_rows if row["mode"] == "autotuned"]
+        if autotuned_rows:
+            auto_x = [int(row["tile_out_width"]) for row in autotuned_rows]
+            auto_y = [float(row["mean_ms"]) for row in autotuned_rows]
+            axis.scatter(
+                auto_x,
+                auto_y,
+                c="#c0392b",
+                s=180,
+                marker="*",
+                edgecolors="black",
+                linewidths=0.7,
+                zorder=4,
+            )
         axis.set_title(problem)
         axis.set_xlabel("Tile width")
         axis.set_ylabel("ms")
