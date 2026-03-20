@@ -64,6 +64,24 @@ python3 scripts/update_readme_benchmarks.py
 
 Results are written to `results/`. The benchmark, plot, and showcase scripts refresh the digest in this README automatically, and `scripts/update_readme_benchmarks.py` can be run manually if you only want to rebuild the report section.
 
+## DietConv v2
+
+DietConv v1 is the direct strip-buffer interpretation of the poster: copy a full `Fh x Win` input strip for each output row, then run one GEMM per kernel column.
+
+DietConv v2 adds one more idea:
+
+- tile the output width and only pack the input span needed for that tile
+- reuse the packed tile window across adjacent output rows in the lower-level C++ implementation
+- feed GEMM directly from the tiled window on stride-`1` cases instead of repacking a second strip matrix
+- autotune the output tile width during C++ and PyTorch benchmark sweeps, then choose the smallest workspace within `5%` of the fastest timing
+- keep a smaller per-thread lowering buffer so memory grows more slowly with thread count
+
+Tradeoffs:
+
+- v2 usually lowers workspace further than v1
+- v2 is now clearly faster than v1 on most of the stride-`1` size sweep in the C++ benchmark, but it can still lose on very wide cases or under some thread counts
+- v2 can still be slower when tiling causes too much repeated packing across the width dimension or when the chosen tile width is not ideal for a specific thread count
+
 <!-- BENCHMARK_DIGEST:START -->
 
 ## Benchmark digest
@@ -214,24 +232,6 @@ This is the simple reference showcase: easy to inspect, not the most meaningful 
 
 <!-- BENCHMARK_DIGEST:END -->
 
-## DietConv v2
-
-DietConv v1 is the direct strip-buffer interpretation of the poster: copy a full `Fh x Win` input strip for each output row, then run one GEMM per kernel column.
-
-DietConv v2 adds one more idea:
-
-- tile the output width and only pack the input span needed for that tile
-- reuse the packed tile window across adjacent output rows in the lower-level C++ implementation
-- feed GEMM directly from the tiled window on stride-`1` cases instead of repacking a second strip matrix
-- autotune the output tile width during C++ and PyTorch benchmark sweeps, then choose the smallest workspace within `5%` of the fastest timing
-- keep a smaller per-thread lowering buffer so memory grows more slowly with thread count
-
-Tradeoffs:
-
-- v2 usually lowers workspace further than v1
-- v2 is now clearly faster than v1 on most of the stride-`1` size sweep in the C++ benchmark, but it can still lose on very wide cases or under some thread counts
-- v2 can still be slower when tiling causes too much repeated packing across the width dimension or when the chosen tile width is not ideal for a specific thread count
-
 ## Notes on fidelity
 
 This is a benchmark-and-explanation repository, not a production kernel:
@@ -249,10 +249,9 @@ This is a benchmark-and-explanation repository, not a production kernel:
 ## Next steps
 
 - Improve the compiled torch extension so it scales better with thread count on AlexNet-style large-kernel layers and batch sizes greater than `1`.
-- Extend the optimized torch path with persistent module-level prepacking for more realistic repeated-inference or fine-tuning scenarios beyond the benchmark harness.
 - Improve v2 autotuning so tile width adapts to thread count and problem shape more reliably; the current torch and C++ results still show cases where v2 leaves performance on the table.
 - Add thread-scaling experiments that separate arithmetic time from packing time, so it is clearer when v2 wins because of cache reuse versus because of reduced memory traffic.
 - Expand the benchmark suite with more CNN-relevant layer shapes from AlexNet, VGG, ResNet, and MobileNet to show where strip-buffer convolution helps most and where large monolithic GEMMs still dominate.
-- Separate theoretical workspace from measured process memory so the repository can report both the structural duplication reduction and the real end-to-end peak RSS seen during runs.
+- Add allocator-aware memory instrumentation alongside the current isolated-process RSS sampling, so the repository can report both practical process-memory deltas and framework-internal memory behavior.
 - Add a PyTorch inference showcase that swaps a few convolution layers between native `conv2d`, `unfold`-style lowering, and DietConv-style strip buffering while preserving numerics, so the repo demonstrates the idea inside a recognizable model.
-- Document the exact correspondence between the poster pseudocode and the implementation, including filter reordering, temporary-buffer layout, and how stride affects the copied strip.
+- Add a concise implementation note that maps the poster pseudocode directly onto the compiled `v1` and `v2` kernels, with diagrams for filter packing and temporary-buffer layout.
