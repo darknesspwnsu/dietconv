@@ -1,6 +1,6 @@
 # DietConv Showcase
 
-This repository recreates the central idea from the 2016 Carnegie Mellon poster: keep the GEMM-friendly structure of fast convolution, but avoid materializing the full `im2col` workspace used by Caffe-style convolution.
+This repository recreates the central idea from my 2016 Carnegie Mellon research work: keep the GEMM-friendly structure of fast convolution, but avoid materializing the full `im2col` workspace used by Caffe-style convolution.
 
 ## Poster gist
 
