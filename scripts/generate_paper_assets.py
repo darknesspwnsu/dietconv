@@ -164,6 +164,45 @@ def plot_v2_ablation() -> None:
     fig.savefig(FIGURES / "v2_tile_ablation_cpp.pdf")
 
 
+def plot_algorithm_overview() -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(8, 2.8), constrained_layout=True)
+
+    for axis, title in zip(axes, ["DietConv v1", "DietConv v2"]):
+        axis.set_xlim(0, 10)
+        axis.set_ylim(0, 6)
+        axis.axis("off")
+        axis.set_title(title)
+
+    # v1: full output-row strip
+    axes[0].add_patch(plt.Rectangle((0.5, 3.5), 8.5, 1.2, facecolor="#d9e8f5", edgecolor="#2d4f8b"))
+    axes[0].text(4.75, 4.1, "Packed input strip for one output row", ha="center", va="center")
+    axes[0].add_patch(plt.Rectangle((1.0, 1.4), 2.0, 0.9, facecolor="#f8d7a8", edgecolor="#d96c06"))
+    axes[0].add_patch(plt.Rectangle((4.0, 1.4), 2.0, 0.9, facecolor="#f8d7a8", edgecolor="#d96c06"))
+    axes[0].add_patch(plt.Rectangle((7.0, 1.4), 2.0, 0.9, facecolor="#f8d7a8", edgecolor="#d96c06"))
+    axes[0].text(2.0, 1.85, "fx=0\nGEMM", ha="center", va="center", fontsize=9)
+    axes[0].text(5.0, 1.85, "fx=1\nGEMM", ha="center", va="center", fontsize=9)
+    axes[0].text(8.0, 1.85, "fx=F_w-1\nGEMM", ha="center", va="center", fontsize=9)
+    axes[0].annotate("", xy=(2.0, 3.5), xytext=(2.0, 2.3), arrowprops=dict(arrowstyle="->", lw=1.5))
+    axes[0].annotate("", xy=(5.0, 3.5), xytext=(5.0, 2.3), arrowprops=dict(arrowstyle="->", lw=1.5))
+    axes[0].annotate("", xy=(8.0, 3.5), xytext=(8.0, 2.3), arrowprops=dict(arrowstyle="->", lw=1.5))
+    axes[0].text(4.75, 0.5, "One full-width strip buffer feeds one GEMM per kernel column", ha="center", va="center", fontsize=9)
+
+    # v2: tile-sized window with row reuse
+    axes[1].add_patch(plt.Rectangle((0.7, 4.0), 3.0, 1.0, facecolor="#d9e8f5", edgecolor="#2d4f8b"))
+    axes[1].add_patch(plt.Rectangle((4.1, 4.0), 3.0, 1.0, facecolor="#d9e8f5", edgecolor="#2d4f8b"))
+    axes[1].add_patch(plt.Rectangle((1.2, 2.2), 2.0, 0.9, facecolor="#f8d7a8", edgecolor="#d96c06"))
+    axes[1].add_patch(plt.Rectangle((4.6, 2.2), 2.0, 0.9, facecolor="#f8d7a8", edgecolor="#d96c06"))
+    axes[1].text(2.2, 4.5, "Tile 0\npacked window", ha="center", va="center", fontsize=9)
+    axes[1].text(5.6, 4.5, "Tile 1\npacked window", ha="center", va="center", fontsize=9)
+    axes[1].text(2.2, 2.65, "Tile GEMMs", ha="center", va="center", fontsize=9)
+    axes[1].text(5.6, 2.65, "Tile GEMMs", ha="center", va="center", fontsize=9)
+    axes[1].annotate("", xy=(2.2, 4.0), xytext=(2.2, 3.1), arrowprops=dict(arrowstyle="->", lw=1.5))
+    axes[1].annotate("", xy=(5.6, 4.0), xytext=(5.6, 3.1), arrowprops=dict(arrowstyle="->", lw=1.5))
+    axes[1].text(5.0, 1.1, "Smaller tiles, row-window reuse,\nautotuned tile width", ha="center", va="center", fontsize=9)
+
+    fig.savefig(FIGURES / "dietconv_overview.pdf")
+
+
 def build_tables() -> None:
     cpp_rows = read_rows(RESULTS / "cpp_size_scaling.csv")
     torch_rows = read_rows(RESULTS / "torch_size_scaling.csv")
@@ -242,6 +281,7 @@ def build_tables() -> None:
 def main() -> None:
     ensure_dirs()
     publication_style()
+    plot_algorithm_overview()
     plot_cpp_size()
     plot_torch_size()
     plot_torch_memory()

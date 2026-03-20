@@ -58,7 +58,28 @@ def read_rss_mib(pid: int) -> float | None:
     return rss_kib / 1024.0
 
 
-def run_case(problem: dict[str, int], backend: str, threads: int, seed: int, repeat: int, warmup: int) -> dict:
+def sample_rss_window_mib(pid: int, duration_s: float, interval_s: float) -> float | None:
+    samples: list[float] = []
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
+        sampled = read_rss_mib(pid)
+        if sampled is not None:
+            samples.append(sampled)
+        time.sleep(interval_s)
+    if not samples:
+        return None
+    return max(samples)
+
+
+def run_case(
+    problem: dict[str, int],
+    backend: str,
+    threads: int,
+    seed: int,
+    repeat: int,
+    warmup: int,
+    settle_ms: int,
+) -> dict:
     command = [
         sys.executable,
         str(WORKER),
@@ -106,7 +127,7 @@ def run_case(problem: dict[str, int], backend: str, threads: int, seed: int, rep
     ready = json.loads(ready_line)
     pid = int(ready["pid"])
 
-    baseline_rss_mib = read_rss_mib(pid)
+    baseline_rss_mib = sample_rss_window_mib(pid, duration_s=settle_ms / 1000.0, interval_s=0.005)
     peak_rss_mib = baseline_rss_mib if baseline_rss_mib is not None else 0.0
 
     proc.stdin.write("\n")
@@ -151,6 +172,7 @@ def main() -> None:
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--seed", type=int, default=41)
+    parser.add_argument("--settle-ms", type=int, default=50)
     parser.add_argument("--results-dir", type=Path, default=ROOT / "results")
     args = parser.parse_args()
 
@@ -167,7 +189,15 @@ def main() -> None:
             "pad": 1,
         }
         for backend in BACKENDS:
-            row = run_case(problem, backend, threads=1, seed=args.seed + index, repeat=args.repeat, warmup=args.warmup)
+            row = run_case(
+                problem,
+                backend,
+                threads=1,
+                seed=args.seed + index,
+                repeat=args.repeat,
+                warmup=args.warmup,
+                settle_ms=args.settle_ms,
+            )
             row["problem_name"] = f"scale-{size}"
             row["sweep"] = "size"
             size_rows.append(row)
@@ -183,6 +213,7 @@ def main() -> None:
                     seed=args.seed + 100 + problem_index,
                     repeat=args.repeat,
                     warmup=args.warmup,
+                    settle_ms=args.settle_ms,
                 )
                 row["problem_name"] = problem["problem_name"]
                 row["sweep"] = "threads"
@@ -197,6 +228,7 @@ def main() -> None:
                 "thread_scaling_cases": len(thread_rows),
                 "platform": platform.platform(),
                 "rss_sampling_interval_ms": 5,
+                "baseline_settle_ms": args.settle_ms,
             },
             handle,
             indent=2,

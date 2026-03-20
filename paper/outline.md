@@ -19,6 +19,7 @@
 ## Figures
 
 - `paper/figures/cpp_size_scaling.pdf`
+- `paper/figures/dietconv_overview.pdf`
 - `paper/figures/torch_size_scaling.pdf`
 - `paper/figures/torch_memory_scaling.pdf`
 - `paper/figures/v2_tile_ablation_cpp.pdf`
@@ -92,7 +93,6 @@
 
 ## Open items before submission-quality draft
 
-- Add a short pseudocode figure for v1 and v2.
 - Expand the ablation story if more tuning knobs are exposed.
 - Add repeated runs and confidence intervals for all reported tables.
 - Consider broader hardware coverage if submission target expects it.
