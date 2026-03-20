@@ -301,11 +301,95 @@ def summarize_torch_threads(rows: list[dict[str, str]]) -> str:
     return "\n".join(blocks)
 
 
+def summarize_torch_memory_size(rows: list[dict[str, str]]) -> str:
+    by_problem: dict[str, dict[str, dict[str, str]]] = {}
+    for row in rows:
+        by_problem.setdefault(row["problem_name"], {})[row["backend"]] = row
+    table_rows = []
+    for problem in sorted(by_problem.keys(), key=lambda name: int(name.split("-")[-1])):
+        data = by_problem[problem]
+        native_delta = float(data["torch-native"]["rss_delta_mib"])
+        unfold_delta = float(data["torch-unfold"]["rss_delta_mib"])
+        v1_delta = float(data["dietconv-v1-compiled"]["rss_delta_mib"])
+        v2_delta = float(data["dietconv-v2-compiled"]["rss_delta_mib"])
+        table_rows.append(
+            [
+                problem.replace("scale-", ""),
+                fmt_mib(native_delta),
+                fmt_mib(unfold_delta),
+                fmt_mib(v1_delta),
+                fmt_mib(v2_delta),
+                winner_label([("native", native_delta), ("unfold", unfold_delta), ("v1", v1_delta), ("v2", v2_delta)]),
+            ]
+        )
+    return "\n".join(
+        [
+            "### PyTorch measured memory digest",
+            "",
+            "- This section reports isolated-process peak RSS deltas, not just theoretical lowering workspace.",
+            "- Lower is better. Unlike the workspace table, `torch-native` now has a real measured memory number.",
+            "- The numbers are sampled process-memory deltas above a worker's post-setup baseline, so treat them as practical RSS estimates rather than exact allocator totals.",
+            "",
+            make_table(
+                ["Input size", "native RSS delta", "unfold RSS delta", "v1 RSS delta", "v2 RSS delta", "Lowest delta"],
+                table_rows,
+            ),
+        ]
+    )
+
+
+def summarize_torch_memory_threads(rows: list[dict[str, str]]) -> str:
+    problems = sorted({row["problem_name"] for row in rows})
+    blocks = []
+    for problem in problems:
+        problem_rows = [row for row in rows if row["problem_name"] == problem]
+        by_threads: dict[str, dict[str, dict[str, str]]] = {}
+        for row in problem_rows:
+            by_threads.setdefault(row["threads"], {})[row["backend"]] = row
+        table_rows = []
+        for thread in sorted(by_threads.keys(), key=int):
+            data = by_threads[thread]
+            native_delta = float(data["torch-native"]["rss_delta_mib"])
+            unfold_delta = float(data["torch-unfold"]["rss_delta_mib"])
+            v1_delta = float(data["dietconv-v1-compiled"]["rss_delta_mib"])
+            v2_delta = float(data["dietconv-v2-compiled"]["rss_delta_mib"])
+            table_rows.append(
+                [
+                    thread,
+                    fmt_mib(native_delta),
+                    fmt_mib(unfold_delta),
+                    fmt_mib(v1_delta),
+                    fmt_mib(v2_delta),
+                    winner_label(
+                        [("native", native_delta), ("unfold", unfold_delta), ("v1", v1_delta), ("v2", v2_delta)]
+                    ),
+                ]
+            )
+        blocks.extend(
+            [
+                "",
+                f"**Memory thread sweep: `{problem}`**",
+                "",
+                make_table(
+                    ["Threads", "native RSS delta", "unfold RSS delta", "v1 RSS delta", "v2 RSS delta", "Lowest delta"],
+                    table_rows,
+                ),
+            ]
+        )
+    if (ROOT / "results" / "torch_memory_size_scaling.png").exists():
+        blocks.extend(["", "![PyTorch memory size scaling](results/torch_memory_size_scaling.png)"])
+    if (ROOT / "results" / "torch_memory_thread_delta.png").exists():
+        blocks.extend(["", "![PyTorch memory thread scaling](results/torch_memory_thread_delta.png)"])
+    return "\n".join(blocks)
+
+
 def build_digest() -> str:
     cpp_size_rows = read_csv_optional(ROOT / "results" / "cpp_size_scaling.csv")
     cpp_thread_rows = read_csv_optional(ROOT / "results" / "cpp_thread_scaling.csv")
     torch_size_rows = read_csv_optional(ROOT / "results" / "torch_size_scaling.csv")
     torch_thread_rows = read_csv_optional(ROOT / "results" / "torch_thread_scaling.csv")
+    torch_memory_size_rows = read_csv_optional(ROOT / "results" / "torch_memory_size_scaling.csv")
+    torch_memory_thread_rows = read_csv_optional(ROOT / "results" / "torch_memory_thread_scaling.csv")
 
     sections = [
         "## Benchmark digest",
@@ -325,6 +409,9 @@ def build_digest() -> str:
         "",
         summarize_torch_size(torch_size_rows) if torch_size_rows else "### PyTorch benchmark digest\n\n_Run `python3 scripts/run_torch_benchmarks.py` to populate this section._",
         summarize_torch_threads(torch_thread_rows) if torch_thread_rows else "",
+        "",
+        summarize_torch_memory_size(torch_memory_size_rows) if torch_memory_size_rows else "### PyTorch measured memory digest\n\n_Run `python3 scripts/run_torch_memory_benchmarks.py` to populate this section._",
+        summarize_torch_memory_threads(torch_memory_thread_rows) if torch_memory_thread_rows else "",
     ]
     return "\n".join(sections).strip() + "\n"
 

@@ -1,0 +1,6 @@
+{
+  "platform": "macOS-26.3.2-arm64-arm-64bit",
+  "rss_sampling_interval_ms": 5,
+  "size_scaling_cases": 16,
+  "thread_scaling_cases": 32
+}

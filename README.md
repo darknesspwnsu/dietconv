@@ -41,6 +41,8 @@ That lines up with the poster's claim that the biggest win is memory and data du
 - `scripts/plot_cpp_benchmarks.py`: generates plots for the C++ sweeps
 - `scripts/run_torch_benchmarks.py`: runs CPU PyTorch benchmarks against native `conv2d`, explicit `unfold`, and DietConv v2
 - `scripts/plot_torch_benchmarks.py`: generates plots for the PyTorch sweeps
+- `scripts/run_torch_memory_benchmarks.py`: measures isolated-process peak RSS for the PyTorch backends
+- `scripts/plot_torch_memory_benchmarks.py`: generates plots for the PyTorch process-memory sweeps
 - `tests/test_algorithms.py`: correctness checks
 - `tests/test_torch_ops.py`: PyTorch correctness checks
 
@@ -55,6 +57,8 @@ python3 scripts/run_cpp_benchmarks.py --repeat 3 --warmup 1
 python3 scripts/plot_cpp_benchmarks.py
 python3 scripts/run_torch_benchmarks.py --repeat 2 --warmup 1
 python3 scripts/plot_torch_benchmarks.py
+python3 scripts/run_torch_memory_benchmarks.py --repeat 2 --warmup 1
+python3 scripts/plot_torch_memory_benchmarks.py
 python3 scripts/update_readme_benchmarks.py
 ```
 
@@ -172,6 +176,41 @@ This is the simple reference showcase: easy to inspect, not the most meaningful 
 ![PyTorch size scaling](results/torch_size_scaling.png)
 
 ![PyTorch thread runtime](results/torch_thread_runtime.png)
+
+### PyTorch measured memory digest
+
+- This section reports isolated-process peak RSS deltas, not just theoretical lowering workspace.
+- Lower is better. Unlike the workspace table, `torch-native` now has a real measured memory number.
+- The numbers are sampled process-memory deltas above a worker's post-setup baseline, so treat them as practical RSS estimates rather than exact allocator totals.
+
+| Input size | native RSS delta | unfold RSS delta | v1 RSS delta | v2 RSS delta | Lowest delta |
+| --- | --- | --- | --- | --- | --- |
+| 32 | 0.844 | 3.703 | 0.703 | 0.812 | v1 |
+| 48 | 7.094 | 8.031 | 1.844 | 1.469 | v2 |
+| 64 | 13.344 | 16.250 | 4.219 | 20.922 | v1 |
+| 96 | 9.375 | 15.844 | 14.297 | 8.266 | v2 |
+
+**Memory thread sweep: `alexnet-conv1`**
+
+| Threads | native RSS delta | unfold RSS delta | v1 RSS delta | v2 RSS delta | Lowest delta |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 10.094 | 13.609 | 1.594 | 2.562 | v1 |
+| 2 | 13.344 | 5.078 | 1.578 | 0.328 | v2 |
+| 4 | 9.047 | 12.953 | 3.766 | 1.438 | v2 |
+| 8 | 15.391 | 12.109 | 4.922 | 1.438 | v2 |
+
+**Memory thread sweep: `scale-96`**
+
+| Threads | native RSS delta | unfold RSS delta | v1 RSS delta | v2 RSS delta | Lowest delta |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 11.594 | 17.000 | 8.625 | 4.906 | v2 |
+| 2 | 9.328 | 15.734 | 14.203 | 2.578 | v2 |
+| 4 | 9.328 | 15.781 | 9.625 | 2.609 | v2 |
+| 8 | 11.578 | 14.609 | 10.766 | 7.156 | v2 |
+
+![PyTorch memory size scaling](results/torch_memory_size_scaling.png)
+
+![PyTorch memory thread scaling](results/torch_memory_thread_delta.png)
 
 <!-- BENCHMARK_DIGEST:END -->
 

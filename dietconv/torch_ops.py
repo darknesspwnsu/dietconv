@@ -22,6 +22,19 @@ def _resolve_tile_out_width(out_w: int, stride: int, tile_out_width: int) -> int
     return min(heuristic, out_w)
 
 
+def _kernel_shape_from_weight_like(x: torch.Tensor, weight_like: torch.Tensor) -> tuple[int, int]:
+    if weight_like.dim() == 4:
+        return int(weight_like.shape[-2]), int(weight_like.shape[-1])
+    if weight_like.dim() == 3:
+        kernel_width = int(weight_like.shape[0])
+        slice_inner = int(weight_like.shape[2])
+        channels = int(x.shape[1])
+        if slice_inner % channels != 0:
+            raise ValueError("Packed weight inner dimension must be divisible by input channels.")
+        return slice_inner // channels, kernel_width
+    raise ValueError("Expected weight-like tensor with rank 3 or 4.")
+
+
 _EXTENSION = None
 _V2_TILE_CACHE: dict[tuple[int, ...], int] = {}
 
@@ -185,10 +198,11 @@ def workspace_bytes_dietconv2d_v2(
     pad_h, pad_w = _pair(padding)
     if stride_h != stride_w:
         raise ValueError("This torch DietConv demo requires equal height/width stride.")
-    out_w = (x.shape[-1] + 2 * pad_w - weight.shape[-1]) // stride_w + 1
+    kernel_height, kernel_width = _kernel_shape_from_weight_like(x, weight)
+    out_w = (x.shape[-1] + 2 * pad_w - kernel_width) // stride_w + 1
     resolved_tile_w = _resolve_tile_out_width(out_w, stride_w, tile_out_width)
-    tile_input_w = (resolved_tile_w - 1) * stride_w + weight.shape[-1]
-    return int(x.element_size() * x.shape[-3] * weight.shape[-2] * tile_input_w)
+    tile_input_w = (resolved_tile_w - 1) * stride_w + kernel_width
+    return int(x.element_size() * x.shape[-3] * kernel_height * tile_input_w)
 
 
 def workspace_bytes_dietconv2d_v1(
@@ -196,9 +210,10 @@ def workspace_bytes_dietconv2d_v1(
     weight: torch.Tensor,
     padding: int | Tuple[int, int] = 0,
 ) -> int:
-    pad_h, pad_w = _pair(padding)
+    _, pad_w = _pair(padding)
+    kernel_height, _ = _kernel_shape_from_weight_like(x, weight)
     padded_width = x.shape[-1] + 2 * pad_w
-    return int(x.element_size() * x.shape[-3] * weight.shape[-2] * padded_width)
+    return int(x.element_size() * x.shape[-3] * kernel_height * padded_width)
 
 
 def workspace_bytes_unfold(
